@@ -379,6 +379,53 @@ void main() {
     expect(resolved.conversationId, 1);
   });
 
+  test(
+    'upsertMessageDeduped re-homologa conversationId cuando alreadyResolved',
+    () async {
+      final now = DateTime.utc(2026, 6, 5, 12);
+      await db.conversationDao.upsert(
+        ConversationsCompanion(
+          id: const Value(1),
+          businessId: const Value('default'),
+          customerWaId: const Value('+5491111111111'),
+          updatedAt: Value(now),
+          syncedAt: Value(now),
+        ),
+      );
+      await db.messageDao.upsert(
+        MessagesCompanion(
+          id: const Value(800),
+          conversationId: const Value(99),
+          direction: const Value('incoming'),
+          body: const Value('Huérfano'),
+          waId: const Value('+5491111111111'),
+          isAdmin: const Value(false),
+          channel: const Value('whatsapp'),
+          status: const Value('delivered'),
+          createdAt: Value(now),
+        ),
+      );
+
+      await repository.upsertMessageDeduped(
+        ChatMessage(
+          id: 800,
+          conversationId: 1,
+          direction: 'incoming',
+          body: 'Huérfano',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: now,
+        ),
+        alreadyResolved: true,
+      );
+
+      final row = await db.messageDao.getById(800);
+      expect(row?.conversationId, 1);
+    },
+  );
+
   test('upsertMessageDeduped omite mensajes idénticos', () async {
     final message = ChatMessage(
       id: 50,
@@ -430,6 +477,106 @@ void main() {
     expect(remaining.map((r) => r.id), containsAll([3, 4, 5, 6, 7]));
     expect(remaining.map((r) => r.id), isNot(contains(1)));
     expect(remaining.map((r) => r.id), isNot(contains(2)));
+  });
+
+  test(
+      'getCachedChatMessages incluye huérfano con mismo wa_id tras upsert bajo otro conversation_id',
+      () async {
+    final now = DateTime.utc(2026, 6, 5, 12);
+    await db.conversationDao.upsert(
+      ConversationsCompanion(
+        id: const Value(1),
+        businessId: const Value('default'),
+        customerWaId: const Value('+5491111111111'),
+        updatedAt: Value(now),
+        syncedAt: Value(now),
+      ),
+    );
+    // Mensaje local normal bajo conv 1.
+    await db.messageDao.upsert(
+      MessagesCompanion(
+        id: const Value(10),
+        conversationId: const Value(1),
+        direction: const Value('incoming'),
+        body: const Value('Normal'),
+        waId: const Value('+5491111111111'),
+        isAdmin: const Value(false),
+        channel: const Value('whatsapp'),
+        status: const Value('delivered'),
+        createdAt: Value(now),
+      ),
+    );
+    // Huérfano: mismo wa_id pero almacenado bajo conv 99 (id servidor).
+    await db.messageDao.upsert(
+      MessagesCompanion(
+        id: const Value(900),
+        conversationId: const Value(99),
+        direction: const Value('incoming'),
+        body: const Value('Huérfano cacheado'),
+        waId: const Value('+5491111111111'),
+        isAdmin: const Value(false),
+        channel: const Value('whatsapp'),
+        status: const Value('delivered'),
+        createdAt: Value(now.add(const Duration(minutes: 1))),
+      ),
+    );
+
+    final conv = Conversation(
+      id: 1,
+      businessId: 'default',
+      customerWaId: '+5491111111111',
+      updatedAt: now,
+    );
+    final cached = await repository.getCachedChatMessages(conv);
+
+    expect(cached.map((m) => m.body), containsAll(['Normal', 'Huérfano cacheado']));
+  });
+
+  test('normalizeIncomingChronology coloca WS con created_at viejo al final', () async {
+    await repository.upsertMessage(
+      ChatMessage(
+        id: 180,
+        conversationId: 1,
+        direction: 'incoming',
+        body: 'Último visible',
+        waId: '+5491111111111',
+        isAdmin: false,
+        channel: 'whatsapp',
+        status: 'delivered',
+        createdAt: DateTime.utc(2026, 6, 10, 18),
+      ),
+    );
+
+    final incoming = ChatMessage(
+      id: 181,
+      conversationId: 1,
+      direction: 'incoming',
+      body: 'Nuevo en vivo',
+      waId: '+5491111111111',
+      isAdmin: false,
+      channel: 'whatsapp',
+      status: 'delivered',
+      createdAt: DateTime.utc(2026, 6, 1, 8),
+    );
+
+    final normalized = await repository.normalizeIncomingChronology(incoming);
+    expect(normalized.id, 181);
+    expect(
+      normalized.createdAt.isAfter(DateTime.utc(2026, 6, 10, 18)),
+      isTrue,
+    );
+
+    await repository.upsertMessage(normalized, alreadyResolved: true);
+    final thread = await repository.getCachedChatMessages(
+      Conversation(
+        id: 1,
+        businessId: 'default',
+        customerWaId: '+5491111111111',
+        updatedAt: DateTime.utc(2026, 6, 10, 18),
+      ),
+    );
+    expect(thread.last.id, 181);
+    expect(thread.last.body, 'Nuevo en vivo');
   });
 
   test('refreshFromApi incremental con API vacía no borra mensajes locales',

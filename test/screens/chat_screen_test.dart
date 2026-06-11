@@ -706,16 +706,53 @@ void main() {
   // ── Nuevos tests Fase 3 ──────────────────────────────────────────────────
 
   testWidgets(
-    'ChatScreen usa StreamBuilder sobre watchMessages como única fuente de verdad',
+    'ChatScreen usa Drift watch como única fuente de verdad (sin StreamBuilder)',
     (WidgetTester tester) async {
       await pumpChatScreen(tester, fromSqliteOnly: true);
       await tester.pump(const Duration(milliseconds: 50));
 
-      // The message list must be driven by a StreamBuilder, not a local list.
-      expect(
-        find.byType(StreamBuilder<List<ChatMessage>>),
-        findsOneWidget,
+      expect(find.byType(StreamBuilder<List<ChatMessage>>), findsNothing);
+      expect(find.byType(MessageBubble), findsWidgets);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
+    'ChatScreen message.new re-upserta si el mensaje no está en el hilo (fallback)',
+    (WidgetTester tester) async {
+      await AppServices.chatRepository.upsertConversation(conversation());
+      await seedMessages();
+
+      await pumpChatScreen(tester, initialMessages: sampleMessages());
+      expect(find.text('Recuperado por fallback'), findsNothing);
+
+      // Simula WS con persist fallido: evento llega a UI pero SQLite no se escribió.
+      final event = RealtimeEvent(
+        type: 'message.new',
+        message: ChatMessage(
+          id: 950,
+          conversationId: 99,
+          direction: 'incoming',
+          body: 'Recuperado por fallback',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: DateTime.utc(2026, 6, 5, 15),
+        ),
       );
+      final savedPersist = realtimeService.persistEvent;
+      realtimeService.persistEvent = (_) async {};
+      try {
+        await realtimeService.debugEmitEvent(event);
+      } finally {
+        realtimeService.persistEvent = savedPersist;
+      }
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Recuperado por fallback'), findsOneWidget);
 
       await disposeWidgetTree(tester);
     },

@@ -98,6 +98,7 @@ class SyncEngine {
     return _messages.refreshFromApi(
       conversationId,
       incremental: true,
+      openConversationIds: _openConversationIds,
     );
   }
 
@@ -111,12 +112,12 @@ class SyncEngine {
     // ChatScreen watches.
     await _ensureLocalConversation(event, message);
 
-    final resolved = await _bindToOpenConversation(
-      await _messages.resolveForLocalStore(
-        message,
-        openConversationIds: _openConversationIds,
-      ),
+    final preBind = await _messages.resolveForLocalStore(
+      message,
+      openConversationIds: _openConversationIds,
     );
+    final bound = await _bindToOpenConversation(preBind);
+    final resolved = await _messages.normalizeIncomingChronology(bound);
     await _messages.upsertMessageDeduped(resolved, alreadyResolved: true);
     await _bumpConversationForMessage(event, resolved);
 

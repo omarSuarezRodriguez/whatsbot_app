@@ -106,7 +106,7 @@ class _ChatsListScreenState extends State<ChatsListScreen> {
       at: chat.lastMessageAt ?? DateTime.now(),
     );
     final initial =
-        await AppServices.messageRepository.getCachedMessages(chat.id);
+        await AppServices.messageRepository.getCachedChatMessages(chat);
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -135,7 +135,7 @@ class _ChatsListScreenState extends State<ChatsListScreen> {
     final nav = navigatorKey.currentState;
     if (nav == null) return;
     final initial =
-        await AppServices.messageRepository.getCachedMessages(chat.id);
+        await AppServices.messageRepository.getCachedChatMessages(chat);
     if (!mounted) return;
     await nav.push(
       MaterialPageRoute(

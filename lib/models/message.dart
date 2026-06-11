@@ -45,6 +45,7 @@ class ChatMessage {
     String? status,
     DateTime? deliveredAt,
     DateTime? readAt,
+    DateTime? createdAt,
   }) {
     return ChatMessage(
       id: id,
@@ -57,15 +58,15 @@ class ChatMessage {
       status: status ?? this.status,
       deliveredAt: deliveredAt ?? this.deliveredAt,
       readAt: readAt ?? this.readAt,
-      createdAt: createdAt,
+      createdAt: createdAt ?? this.createdAt,
       clientUuid: clientUuid,
     );
   }
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     return ChatMessage(
-      id: json['id'] as int,
-      conversationId: json['conversation_id'] as int,
+      id: _asInt(json['id']) ?? 0,
+      conversationId: _asInt(json['conversation_id']) ?? 0,
       direction: json['direction'] as String,
       body: json['body'] as String,
       waId: json['wa_id'] as String,
@@ -117,5 +118,11 @@ class ChatMessage {
   static DateTime? _parseDate(dynamic value) {
     if (value == null) return null;
     return DateTime.parse(value as String);
+  }
+
+  static int? _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is String) return int.tryParse(value);
+    return null;
   }
 }

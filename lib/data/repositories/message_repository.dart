@@ -60,6 +60,43 @@ class MessageRepository {
   Future<List<ChatMessage>> getCachedMessages(int conversationId) =>
       watchMessages(conversationId).first;
 
+  /// Lectura puntual thread-aware: incluye mensajes con mismo wa_id aunque el
+  /// servidor los haya archivado bajo otro conversation_id (huérfanos).
+  Future<List<ChatMessage>> getCachedChatMessages(Conversation conversation) =>
+      watchChatMessages(conversation).first;
+
+  /// Último mensaje del hilo (createdAt, luego id).
+  Future<ChatMessage?> getLatestChronologicalInThread(
+    int conversationId,
+    String waId,
+  ) async {
+    final rows = await _db.messageDao.listForChatThread(
+      conversationId,
+      (id) => _sameWa(id, waId),
+    );
+    if (rows.isEmpty) return null;
+    return _mapSorted(rows).last;
+  }
+
+  /// WS a veces trae `created_at` anterior al último del hilo; fuerza orden local.
+  Future<ChatMessage> normalizeIncomingChronology(ChatMessage message) async {
+    if (message.isOutgoing) return message;
+
+    final latest = await getLatestChronologicalInThread(
+      message.conversationId,
+      message.waId,
+    );
+    if (latest == null || message.id <= latest.id) return message;
+
+    final at = message.createdAt.toUtc();
+    final latestAt = latest.createdAt.toUtc();
+    if (at.isAfter(latestAt)) return message;
+
+    return message.copyWith(
+      createdAt: latestAt.add(const Duration(microseconds: 1)),
+    );
+  }
+
   /// Maximum messages kept per chat in local storage.
   ///
   /// Policy: prune is a local storage limit only — messages are NEVER deleted
@@ -71,9 +108,12 @@ class MessageRepository {
   /// No mover mensajes entre conversaciones al sincronizar (PK = id).
   ChatMessage _preserveLocalConversation(
     ChatMessage incoming,
-    MessageEntity? existing,
-  ) {
+    MessageEntity? existing, {
+    bool alreadyResolved = false,
+  }) {
     if (existing == null) return incoming;
+    // SyncEngine / chat abierto ya resolvió el hilo local — no re-archivar huérfanos.
+    if (alreadyResolved) return incoming;
     return incoming.copyWith(conversationId: existing.conversationId);
   }
 
@@ -158,7 +198,11 @@ class MessageRepository {
     final existing = await _db.messageDao.getById(message.id);
     final resolved =
         alreadyResolved ? message : await _resolveForLocalStore(message);
-    final toWrite = _preserveLocalConversation(resolved, existing);
+    final toWrite = _preserveLocalConversation(
+      resolved,
+      existing,
+      alreadyResolved: alreadyResolved,
+    );
     await _db.messageDao.upsert(toWrite.toLocalRow());
     if (toWrite.id > 0) {
       await _updateMessagesCursor(toWrite.conversationId, toWrite.id);
@@ -193,6 +237,12 @@ class MessageRepository {
 
     final existing = await _db.messageDao.getById(resolved.id);
     if (existing != null &&
+        alreadyResolved &&
+        existing.conversationId != resolved.conversationId) {
+      await upsertMessage(resolved, alreadyResolved: true);
+      return true;
+    }
+    if (existing != null &&
         existing.body == resolved.body &&
         existing.status == resolved.status &&
         existing.deliveredAt == resolved.deliveredAt &&
@@ -216,7 +266,10 @@ class MessageRepository {
     return true;
   }
 
-  Future<void> upsertMessages(List<ChatMessage> messages) async {
+  Future<void> upsertMessages(
+    List<ChatMessage> messages, {
+    Iterable<int>? openConversationIds,
+  }) async {
     if (messages.isEmpty) return;
 
     final toWrite = <ChatMessage>[];
@@ -256,7 +309,12 @@ class MessageRepository {
         );
         continue;
       }
-      toWrite.add(await _resolveForLocalStore(message));
+      toWrite.add(
+        await resolveForLocalStore(
+          message,
+          openConversationIds: openConversationIds,
+        ),
+      );
     }
     if (toWrite.isEmpty) return;
 
@@ -327,6 +385,7 @@ class MessageRepository {
   Future<List<ChatMessage>> refreshFromApi(
     int conversationId, {
     bool incremental = false,
+    Iterable<int>? openConversationIds,
   }) async {
     int? afterId;
     if (incremental) {
@@ -341,7 +400,7 @@ class MessageRepository {
       afterId: afterId,
     );
     if (messages.isNotEmpty) {
-      await upsertMessages(messages);
+      await upsertMessages(messages, openConversationIds: openConversationIds);
     }
     await _db.syncCursorDao.setCursor(_messagesSyncTimeKey(conversationId), '1');
     return messages;

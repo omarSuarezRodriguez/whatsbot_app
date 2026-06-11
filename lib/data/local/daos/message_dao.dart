@@ -19,6 +19,30 @@ class MessageDao extends DatabaseAccessor<AppDatabase> with _$MessageDaoMixin {
         .watch();
   }
 
+  /// Lectura puntual del hilo (misma regla que [watchForChatThread]).
+  Future<List<MessageEntity>> listForChatThread(
+    int conversationId,
+    bool Function(String waId) waMatches,
+  ) async {
+    final rows = await (select(messages)..orderBy([
+          (t) => OrderingTerm.asc(t.createdAt),
+          (t) => OrderingTerm.asc(t.id),
+        ]))
+        .get();
+    final byId = <int, MessageEntity>{};
+    for (final row in rows) {
+      if (row.conversationId == conversationId || waMatches(row.waId)) {
+        byId[row.id] = row;
+      }
+    }
+    return byId.values.toList()
+      ..sort((a, b) {
+        final byTime = a.createdAt.compareTo(b.createdAt);
+        if (byTime != 0) return byTime;
+        return a.id.compareTo(b.id);
+      });
+  }
+
   /// Hilo del chat abierto: mensajes del `conversationId` local **o** mismo
   /// `wa_id` bajo otro id (p. ej. conversation_id huérfano del servidor).
   ///

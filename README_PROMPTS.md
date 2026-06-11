@@ -1,4 +1,4 @@
-## 1.5
+## 1.6 - Chat totalmente funcional
 
 
 
@@ -2219,3 +2219,33 @@ Si tras rebuild completo sigue fallando, el siguiente sospechoso sería que trac
 
 
 ###################################################
+## 1.6 - Chat totalmente funcional
+
+
+## prompt 
+
+Por qué fue el error todo el tiempo? solo dime para tenerlo en cuenta
+
+
+## resp cursor 
+Por qué fallaba todo el tiempo
+No era que el mensaje no llegara. Llegaba por WebSocket, se guardaba en SQLite y la UI se actualizaba.
+
+El problema era el orden:
+
+El chat ordena por created_at (fecha del servidor).
+El servidor a veces mandaba mensajes nuevos con una fecha vieja (desfasada, en otro huso, o de cuando se creó el registro en BD).
+En la app eso hacía que el mensaje entrara en medio del hilo, no abajo.
+Tú mirabas abajo (donde esperas lo nuevo) y parecía que “no llegaba”.
+Al cerrar y reabrir, a veces lo veías porque scrolleabas o el hilo se recargaba distinto.
+ChatsList sí se actualizaba porque solo mira el preview del último mensaje, no el orden visual del chat.
+En una frase: el pipeline funcionaba; el servidor mandaba created_at mal y el chat pintaba los mensajes nuevos arriba en vez de abajo.
+
+Para el futuro: si la lista de chats se actualiza pero el chat abierto no muestra nada abajo, sospecha de orden por fecha, no de WebSocket roto.
+
+
+
+###################################################
+
+
+

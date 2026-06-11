@@ -41,19 +41,16 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _orderBusy = false;
   bool _peerTyping = false;
 
-  // Dos watches Drift independientes: broadcast sobre un solo watch pierde
-  // emisiones para el StreamBuilder (suscriptor tardío).
-  late final Stream<List<ChatMessage>> _uiMessagesStream;
-  late final Stream<List<ChatMessage>> _sideEffectMessagesStream;
-
-  // Tracks previous snapshot for scroll/seen side effects only — NOT for UI state.
+  // Única fuente de verdad: Drift → setState (más fiable que StreamBuilder en vivo).
+  List<ChatMessage> _messages = [];
   List<ChatMessage> _lastSideEffectMessages = [];
 
   Timer? _typingStopTimer;
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   StreamSubscription<bool>? _connectivitySub;
   StreamSubscription<bool>? _connectionSub;
-  StreamSubscription<List<ChatMessage>>? _messagesSub;
+  StreamSubscription<List<ChatMessage>>? _uiMessagesSub;
+  StreamSubscription<List<ChatMessage>>? _sideEffectMessagesSub;
   Timer? _wsFallbackTimer;
 
   MessageRepository get _messageRepo => AppServices.messageRepository;
@@ -62,9 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _uiMessagesStream = _messageRepo.watchChatMessages(widget.conversation);
-    _sideEffectMessagesStream =
-        _messageRepo.watchChatMessages(widget.conversation);
+    _messages = List<ChatMessage>.from(widget.initialMessages ?? const []);
 
     AppServices.syncEngine.trackOpenConversation(widget.conversation.id);
     messageAlerts.setActiveConversation(widget.conversation.id);
@@ -84,8 +79,19 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     _updateWsFallbackTimer(realtimeService.isConnected);
-    // Side-effect listener: scroll and seen tracking only — no setState for messages.
-    _messagesSub = _sideEffectMessagesStream.listen(_onMessagesForSideEffects);
+    _uiMessagesSub = _messageRepo.watchChatMessages(widget.conversation).listen(
+      (messages) {
+        if (!mounted) return;
+        setState(() => _messages = messages);
+      },
+    );
+    _sideEffectMessagesSub =
+        _messageRepo.watchChatMessages(widget.conversation).listen(
+      (messages) {
+        if (!mounted) return;
+        _onMessagesForSideEffects(messages);
+      },
+    );
     SchedulerBinding.instance.scheduleFrameCallback((_) {
       unawaited(_markRead());
       unawaited(_refresh(silent: true));
@@ -105,7 +111,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _realtimeSub?.cancel();
     _connectivitySub?.cancel();
     _connectionSub?.cancel();
-    _messagesSub?.cancel();
+    _uiMessagesSub?.cancel();
+    _sideEffectMessagesSub?.cancel();
     _wsFallbackTimer?.cancel();
     _typingStopTimer?.cancel();
     _inputController.dispose();
@@ -118,7 +125,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
 
     final prev = _lastSideEffectMessages;
+    final prevIds = prev.map((m) => m.id).toSet();
     final hadGrowth = messages.length > prev.length ||
+        messages.any((m) => !prevIds.contains(m.id)) ||
         (messages.isNotEmpty &&
             prev.isNotEmpty &&
             messages.last.id != prev.last.id);
@@ -155,6 +164,30 @@ class _ChatScreenState extends State<ChatScreen> {
     return widget.conversation.lastMessageAt;
   }
 
+  Future<void> _ensureMessageInThread(ChatMessage message) async {
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+
+    final visible = _messages.any((m) => m.id == message.id);
+    if (visible) return;
+
+    final resolved = await _messageRepo.normalizeIncomingChronology(
+      await _messageRepo.resolveForLocalStore(
+        message,
+        openConversationIds: {widget.conversation.id},
+      ),
+    );
+    await _messageRepo.upsertMessageDeduped(resolved, alreadyResolved: true);
+
+    if (!mounted) return;
+    if (_messages.any((m) => m.id == message.id)) return;
+
+    await AppServices.syncEngine.syncMessagesIncremental(
+      widget.conversation.id,
+      force: true,
+    );
+  }
+
   Future<void> _markRead() async {
     try {
       await apiClient.markConversationRead(widget.conversation.id);
@@ -183,8 +216,15 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
 
     switch (event.type) {
-      // message.new and message.status are handled exclusively by SyncEngine →
-      // SQLite → Drift stream → StreamBuilder. No direct UI mutation here.
+      case 'message.new':
+        final message = event.message;
+        if (message != null &&
+            _sameWa(message.waId, widget.conversation.customerWaId)) {
+          // Red de seguridad: la lista ya se actualizó vía bump; asegurar SQLite
+          // y el hilo abierto si SyncEngine falló o archivó mal el mensaje.
+          unawaited(_ensureMessageInThread(message));
+        }
+        break;
       case 'conversation.updated':
       case 'conversation.sync':
         unawaited(_refresh(silent: true, force: true));
@@ -254,7 +294,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (showLoading) setState(() => _refreshing = false);
       // Drift stream auto-emits after sync — no manual reload needed.
       final msgs =
-          await _messageRepo.getCachedMessages(widget.conversation.id);
+          await _messageRepo.getCachedChatMessages(widget.conversation);
       if (!mounted) return;
       if (msgs.isNotEmpty) {
         await messageAlerts.handleChatMessages(
@@ -415,36 +455,28 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Container(
               color: WhatsAppTheme.chatBackground,
-              child: StreamBuilder<List<ChatMessage>>(
-                stream: _uiMessagesStream,
-                initialData: widget.initialMessages,
-                builder: (context, snapshot) {
-                  final messages = snapshot.data ?? const [];
-                  if (messages.isEmpty && _refreshing) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  return ListView.builder(
-                    controller: _scrollController,
-                    reverse: true,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: messages.length + typingOffset,
-                    itemBuilder: (_, i) {
-                      if (_peerTyping && i == 0) {
-                        return const TypingIndicator();
-                      }
-                      final messageIndex =
-                          messages.length - 1 - (i - typingOffset);
-                      final message = messages[messageIndex];
-                      return MessageBubble(
-                        key: ValueKey(
-                          message.clientUuid ?? 'msg-${message.id}',
-                        ),
-                        message: message,
-                      );
-                    },
-                  );
-                },
-              ),
+              child: _messages.isEmpty && _refreshing
+                  ? const Center(child: CircularProgressIndicator())
+                  : ListView.builder(
+                      controller: _scrollController,
+                      reverse: true,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: _messages.length + typingOffset,
+                      itemBuilder: (_, i) {
+                        if (_peerTyping && i == 0) {
+                          return const TypingIndicator();
+                        }
+                        final messageIndex =
+                            _messages.length - 1 - (i - typingOffset);
+                        final message = _messages[messageIndex];
+                        return MessageBubble(
+                          key: ValueKey(
+                            message.clientUuid ?? 'msg-${message.id}',
+                          ),
+                          message: message,
+                        );
+                      },
+                    ),
             ),
           ),
           Material(
