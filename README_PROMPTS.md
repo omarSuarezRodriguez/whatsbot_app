@@ -1,4 +1,4 @@
-## 1.3.
+## 1.4
 
 
 
@@ -1885,5 +1885,115 @@ No action needed. The suite is green at 65 tests with no failures.
 
 
 ########################################################
+## 1.4
+
+## prompt ##
+
+## Contexto
+App Flutter WhatsBot en `C:\Users\Usuario\Desktop\whatsbot_app`.
+Backend REST + WebSocket funcionan. El bug es solo de UI/arquitectura Flutter.
+
+## Síntoma (usar estos nombres siempre)
+- **Lista de chats / bandeja / ChatsListScreen** → SÍ se actualiza en vivo cuando llega un mensaje por WebSocket.
+- **Chat abierto / ventana de chat / ChatScreen** → NO se actualiza; el mensaje nuevo no aparece hasta pull-to-refresh.
+
+En resumen: **lista OK, chat abierto NO**.
+
+## Pasos para reproducir
+1. Abro un chat (ChatScreen / conversación abierta).
+2. Llega un mensaje entrante por WhatsApp → WebSocket.
+3. En ChatsListScreen veo el preview del último mensaje actualizado ✓
+4. En ChatScreen el historial NO muestra el mensaje nuevo ✗
+5. Pull-to-refresh en ChatScreen → ahí sí aparece ✓
+
+## Hipótesis ya validadas
+- Pipeline WS: `realtime_service` → `SyncEngine.handleRealtimeEvent` (SQLite primero) → listeners.
+- ChatsListScreen funciona porque usa `StreamBuilder` sobre `watchConversations()` y/o bump en su handler WS.
+- ChatScreen debería reaccionar solo vía Drift: `watchChatMessages(conversation)` → `StreamBuilder`.
+- Posibles causas:
+  1. Mensaje guardado bajo `conversationId` distinto al que observa ChatScreen.
+  2. `resolveForLocalStore` / `upsertMessageDeduped` re-resuelven y deshacen `_bindToOpenConversation`.
+  3. Stream recreado en `build()` o `asBroadcastStream()` mal usado.
+  4. `watchChatMessages` no incluye mensajes con mismo `wa_id` pero `conversation_id` huérfano del servidor.
+
+## Archivos clave
+- `lib/screens/chat_screen.dart` — chat abierto (roto)
+- `lib/screens/chats_list_screen.dart` — lista de chats (funciona)
+- `lib/data/repositories/message_repository.dart` — `watchChatMessages`, `resolveForLocalStore`
+- `lib/data/sync/sync_engine.dart` — `trackOpenConversation`, `_bindToOpenConversation`
+- `lib/data/local/daos/message_dao.dart`
+- `lib/di/app_services.dart`
+
+## Qué necesito
+1. Diagnóstico capa por capa: ¿WS llega? ¿SQLite persiste? ¿`conversationId` correcto? ¿`watchChatMessages` emite? ¿`StreamBuilder` reconstruye?
+2. Fix mínimo y correcto para que **ChatScreen (chat abierto)** se actualice en vivo igual que **ChatsListScreen (lista)**.
+3. No reintroducir Path B (mutar UI desde WS en ChatScreen); una sola fuente de verdad: SQLite + Drift watch.
+4. Agregar o ajustar tests en `test/screens/chat_screen_test.dart` para el caso: mensaje con `conversation_id` servidor distinto pero mismo `wa_id`.
+5. Correr `flutter test` y `dart analyze` en archivos tocados.
+
+## Criterio de éxito
+Con un chat abierto (ChatScreen), al llegar un mensaje por WebSocket:
+- ChatsListScreen sigue actualizando el preview ✓
+- ChatScreen muestra el mensaje nuevo sin pull-to-refresh ✓
 
 
+
+## resp cursor ##
+Diagnóstico capa por capa
+Capa	Estado	Detalle
+WebSocket
+OK
+realtime_service.emitAfterPersist persiste primero y luego emite a listeners
+SyncEngine
+Bug parcial
+Persistía el mensaje, pero a veces bajo un conversationId distinto al del chat abierto
+SQLite
+OK (datos “huérfanos”)
+El mensaje sí se guardaba, pero a veces con conversation_id del servidor (p. ej. 99) en vez del local (p. ej. 1)
+resolveForLocalStore
+Bug
+Aceptaba getById(serverConvId) sin verificar wa_id; con duplicados por wa_id podía elegir el id equivocado
+watchMessages(id)
+Bug
+watchForConversation filtra solo por conversationId exacto → el .watch() del chat abierto no emitía
+ChatsListScreen
+OK
+Observa watchConversations() y hace bump por wa_id → el preview se actualizaba igual
+ChatScreen / StreamBuilder
+OK en arquitectura
+El StreamBuilder estaba bien; no recibía datos porque el watch no incluía el hilo correcto
+Path B (WS → UI)
+No reintroducido
+ChatScreen sigue sin mutar mensajes desde el handler WS
+Causa raíz: desalineación conversationId servidor ↔ local. La lista se actualizaba por wa_id; el chat abierto observaba solo el id local.
+
+Fix aplicado (mínimo, una sola fuente de verdad)
+1. Persistencia — sync_engine.dart + message_repository.dart
+_bindToOpenConversation: si hay chat abierto (trackOpenConversation) y el wa_id coincide, fuerza el conversationId del chat abierto.
+resolveForLocalStore: prioriza chats abiertos; ya no acepta un conversation_id servidor si el wa_id no coincide.
+upsertMessageDeduped(..., alreadyResolved: true): evita que una segunda resolución deshaga el enlace.
+2. Lectura — message_dao.dart + message_repository.dart
+watchChatMessages(Conversation): incluye mensajes del id local y mensajes con mismo wa_id archivados bajo otro id (red de seguridad para datos ya mal archivados).
+3. UI — chat_screen.dart
+Usa watchChatMessages(widget.conversation) en lugar de watchMessages(id).
+Sin Path B: sigue siendo SQLite → Drift → StreamBuilder.
+Tests añadidos/ajustados
+watchChatMessages incluye mensajes con mismo wa_id en otro conversation_id
+resolveForLocalStore no acepta conversation_id servidor sin wa_id coincidente
+resolveForLocalStore prefiere chat abierto con mismo wa_id
+handleRealtimeEvent enlaza message.new al chat abierto por wa_id (sync_engine)
+ChatScreen muestra mensaje mal archivado bajo otro conversation_id (widget)
+Verificación
+flutter test → 70/70 passed
+dart analyze en archivos tocados → sin issues
+Con un chat abierto, al llegar un mensaje por WebSocket:
+
+ChatsListScreen sigue actualizando el preview ✓
+ChatScreen muestra el mensaje nuevo sin pull-to-refresh ✓
+El pull-to-refresh seguía funcionando porque refreshFromApi re-leía por wa_id y reconciliaba; ahora el camino en vivo (WS → SQLite → Drift) está alineado con ese comportamiento.
+
+
+
+
+
+###################################################

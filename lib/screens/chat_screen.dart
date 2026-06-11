@@ -62,7 +62,7 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     // Broadcast so both StreamBuilder and side-effect listener share one DB watcher.
     _messagesStream = _messageRepo
-        .watchMessages(widget.conversation.id)
+        .watchChatMessages(widget.conversation)
         .asBroadcastStream();
 
     AppServices.syncEngine.trackOpenConversation(widget.conversation.id);
@@ -134,7 +134,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _markConversationSeenOnExit() async {
     final messages =
-        await _messageRepo.watchMessages(widget.conversation.id).first;
+        await _messageRepo.watchChatMessages(widget.conversation).first;
     await _persistSeen(messages);
   }
 

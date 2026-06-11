@@ -379,6 +379,33 @@ void main() {
   });
 
   testWidgets(
+    'ChatScreen muestra mensaje mal archivado bajo otro conversation_id (watch wa_id)',
+    (WidgetTester tester) async {
+      await AppServices.chatRepository.upsertConversation(conversation());
+      await AppServices.messageRepository.upsertMessage(
+        ChatMessage(
+          id: 880,
+          conversationId: 99,
+          direction: 'incoming',
+          body: 'Huérfano del servidor',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: DateTime.utc(2026, 6, 5, 14, 1),
+        ),
+      );
+
+      await pumpChatScreen(tester, initialMessages: const []);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Huérfano del servidor'), findsOneWidget);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
     'ChatScreen muestra message.new con conversation_id servidor distinto (FIX 1b)',
     (WidgetTester tester) async {
       realtimeService.debugSetConnected(true);

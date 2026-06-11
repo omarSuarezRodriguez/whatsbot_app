@@ -111,8 +111,13 @@ class SyncEngine {
     // ChatScreen watches.
     await _ensureLocalConversation(event, message);
 
-    final resolved = await _messages.resolveForLocalStore(message);
-    await _messages.upsertMessageDeduped(resolved);
+    final resolved = await _bindToOpenConversation(
+      await _messages.resolveForLocalStore(
+        message,
+        openConversationIds: _openConversationIds,
+      ),
+    );
+    await _messages.upsertMessageDeduped(resolved, alreadyResolved: true);
     await _bumpConversationForMessage(event, resolved);
 
     if (!resolved.isOutgoing) {
@@ -126,6 +131,27 @@ class SyncEngine {
 
   /// Guarantees a local conversation row exists for [message] so that
   /// [resolveForLocalStore] can bind the message to the correct local id.
+  /// Fuerza el hilo del chat abierto cuando el wa_id coincide (prioridad sobre
+  /// otro conversation_id local con el mismo cliente).
+  Future<ChatMessage> _bindToOpenConversation(ChatMessage message) async {
+    for (final openId in _openConversationIds) {
+      final open = await _chats.getConversation(openId);
+      if (open != null && _sameWa(open.customerWaId, message.waId)) {
+        if (message.conversationId != openId) {
+          return message.copyWith(conversationId: openId);
+        }
+        return message;
+      }
+    }
+    return message;
+  }
+
+  static bool _sameWa(String a, String b) {
+    final na = a.replaceAll(RegExp(r'[^0-9+]'), '');
+    final nb = b.replaceAll(RegExp(r'[^0-9+]'), '');
+    return na == nb || na.endsWith(nb) || nb.endsWith(na);
+  }
+
   Future<void> _ensureLocalConversation(
     RealtimeEvent event,
     ChatMessage message,

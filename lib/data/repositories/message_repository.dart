@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart' show Value;
 import 'package:uuid/uuid.dart';
 
+import '../../models/conversation.dart';
 import '../../models/message.dart';
 import '../../models/send_message_result.dart';
 import '../../services/api_client.dart';
@@ -35,11 +36,24 @@ class MessageRepository {
   }
 
   Stream<List<ChatMessage>> watchMessages(int conversationId) {
-    return _db.messageDao.watchForConversation(conversationId).map((rows) {
-      final messages = rows.map(ChatMessage.fromLocalRow).toList();
-      messages.sort(ChatMessage.compareChronological);
-      return messages;
-    });
+    return _db.messageDao.watchForConversation(conversationId).map(_mapSorted);
+  }
+
+  /// Stream del hilo abierto: id local + mensajes con mismo wa_id aunque el
+  /// servidor haya usado otro conversation_id al persistir.
+  Stream<List<ChatMessage>> watchChatMessages(Conversation conversation) {
+    return _db.messageDao
+        .watchForChatThread(
+          conversation.id,
+          (waId) => _sameWa(waId, conversation.customerWaId),
+        )
+        .map(_mapSorted);
+  }
+
+  List<ChatMessage> _mapSorted(List<MessageEntity> rows) {
+    final messages = rows.map(ChatMessage.fromLocalRow).toList();
+    messages.sort(ChatMessage.compareChronological);
+    return messages;
   }
 
   /// Lectura puntual de SQLite para precargar antes de abrir el chat.
@@ -70,7 +84,10 @@ class MessageRepository {
   }
 
   /// Enlaza mensaje WS/REST al hilo local que ve la UI (wa_id antes que conversation_id servidor).
-  Future<ChatMessage> resolveForLocalStore(ChatMessage message) async {
+  Future<ChatMessage> resolveForLocalStore(
+    ChatMessage message, {
+    Iterable<int>? openConversationIds,
+  }) async {
     final existing = await _db.messageDao.getById(message.id);
     if (existing != null) {
       return message.copyWith(conversationId: existing.conversationId);
@@ -83,6 +100,12 @@ class MessageRepository {
       }
     }
 
+    final boundToOpen = await _bindToOpenConversations(
+      message,
+      openConversationIds,
+    );
+    if (boundToOpen != null) return boundToOpen;
+
     final businessId = _api.businessId;
     if (businessId != null && businessId.isNotEmpty) {
       final conversations = await _db.conversationDao.listForBusiness(businessId);
@@ -94,7 +117,9 @@ class MessageRepository {
     }
 
     final localConv = await _db.conversationDao.getById(message.conversationId);
-    if (localConv != null) return message;
+    if (localConv != null && _sameWa(localConv.customerWaId, message.waId)) {
+      return message;
+    }
 
     // Fallthrough: no local conversation matched by id, clientUuid, wa_id, or
     // server conversationId. SyncEngine._ensureLocalConversation should have
@@ -109,12 +134,30 @@ class MessageRepository {
     return message;
   }
 
+  Future<ChatMessage?> _bindToOpenConversations(
+    ChatMessage message,
+    Iterable<int>? openConversationIds,
+  ) async {
+    if (openConversationIds == null) return null;
+    for (final openId in openConversationIds) {
+      final open = await _db.conversationDao.getById(openId);
+      if (open != null && _sameWa(open.customerWaId, message.waId)) {
+        return message.copyWith(conversationId: openId);
+      }
+    }
+    return null;
+  }
+
   Future<ChatMessage> _resolveForLocalStore(ChatMessage message) =>
       resolveForLocalStore(message);
 
-  Future<void> upsertMessage(ChatMessage message) async {
+  Future<void> upsertMessage(
+    ChatMessage message, {
+    bool alreadyResolved = false,
+  }) async {
     final existing = await _db.messageDao.getById(message.id);
-    final resolved = await _resolveForLocalStore(message);
+    final resolved =
+        alreadyResolved ? message : await _resolveForLocalStore(message);
     final toWrite = _preserveLocalConversation(resolved, existing);
     await _db.messageDao.upsert(toWrite.toLocalRow());
     if (toWrite.id > 0) {
@@ -127,8 +170,12 @@ class MessageRepository {
   }
 
   /// Inserta o actualiza solo si el mensaje es nuevo o cambió.
-  Future<bool> upsertMessageDeduped(ChatMessage message) async {
-    final resolved = await _resolveForLocalStore(message);
+  Future<bool> upsertMessageDeduped(
+    ChatMessage message, {
+    bool alreadyResolved = false,
+  }) async {
+    final resolved =
+        alreadyResolved ? message : await _resolveForLocalStore(message);
 
     if (resolved.clientUuid != null && resolved.clientUuid!.isNotEmpty) {
       final pending = await _db.outboundQueueDao.getByClientUuid(
@@ -165,7 +212,7 @@ class MessageRepository {
       );
       return true;
     }
-    await upsertMessage(resolved);
+    await upsertMessage(resolved, alreadyResolved: true);
     return true;
   }
 

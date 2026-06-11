@@ -195,6 +195,51 @@ void main() {
     expect(stored.single.id, 10);
   });
 
+  test('handleRealtimeEvent enlaza message.new al chat abierto por wa_id', () async {
+    final now = DateTime.utc(2026, 6, 5, 16);
+    await chats.upsertConversation(
+      Conversation(
+        id: 1,
+        businessId: 'default',
+        customerWaId: '+5491111111111',
+        updatedAt: now,
+      ),
+    );
+    await chats.upsertConversation(
+      Conversation(
+        id: 99,
+        businessId: 'default',
+        customerWaId: '+5491111111111',
+        updatedAt: now,
+      ),
+    );
+
+    engine.trackOpenConversation(1);
+    await engine.handleRealtimeEvent(
+      RealtimeEvent(
+        type: 'message.new',
+        message: ChatMessage(
+          id: 121,
+          conversationId: 99,
+          direction: 'incoming',
+          body: 'Prioridad chat abierto',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: now,
+        ),
+      ),
+    );
+
+    final stored = await messages.watchMessages(1).first;
+    expect(stored.single.id, 121);
+    expect(stored.single.conversationId, 1);
+
+    final other = await messages.watchMessages(99).first;
+    expect(other, isEmpty);
+  });
+
   test('handleRealtimeEvent guarda message.new en hilo local por wa_id', () async {
     await chats.upsertConversation(
       Conversation(

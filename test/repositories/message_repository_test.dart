@@ -3,6 +3,7 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:whatsbot_app/data/local/app_database.dart';
 import 'package:whatsbot_app/data/repositories/message_repository.dart';
+import 'package:whatsbot_app/models/conversation.dart';
 import 'package:whatsbot_app/models/message.dart';
 
 import '../helpers/test_api_client.dart';
@@ -161,6 +162,126 @@ void main() {
     await db.syncCursorDao.setCursor('messages_sync_at:1', '1');
 
     expect(await repository.needsSyncFromApi(1), isFalse);
+  });
+
+  test(
+    'resolveForLocalStore no acepta conversation_id servidor sin wa_id coincidente',
+    () async {
+      final now = DateTime.utc(2026, 6, 5, 12);
+      await db.conversationDao.upsert(
+        ConversationsCompanion(
+          id: const Value(1),
+          businessId: const Value('default'),
+          customerWaId: const Value('+5491111111111'),
+          updatedAt: Value(now),
+          syncedAt: Value(now),
+        ),
+      );
+      await db.conversationDao.upsert(
+        ConversationsCompanion(
+          id: const Value(99),
+          businessId: const Value('default'),
+          customerWaId: const Value('+5498888888888'),
+          updatedAt: Value(now),
+          syncedAt: Value(now),
+        ),
+      );
+
+      final resolved = await repository.resolveForLocalStore(
+        ChatMessage(
+          id: 502,
+          conversationId: 99,
+          direction: 'incoming',
+          body: 'No debe ir a conv 99',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: now,
+        ),
+      );
+
+      expect(resolved.conversationId, 1);
+    },
+  );
+
+  test('resolveForLocalStore prefiere chat abierto con mismo wa_id', () async {
+    final now = DateTime.utc(2026, 6, 5, 12);
+    await db.conversationDao.upsert(
+      ConversationsCompanion(
+        id: const Value(1),
+        businessId: const Value('default'),
+        customerWaId: const Value('+5491111111111'),
+        updatedAt: Value(now),
+        syncedAt: Value(now),
+      ),
+    );
+    await db.conversationDao.upsert(
+      ConversationsCompanion(
+        id: const Value(99),
+        businessId: const Value('default'),
+        customerWaId: const Value('+5491111111111'),
+        updatedAt: Value(now),
+        syncedAt: Value(now),
+      ),
+    );
+
+    final resolved = await repository.resolveForLocalStore(
+      ChatMessage(
+        id: 503,
+        conversationId: 99,
+        direction: 'incoming',
+        body: 'Al chat abierto',
+        waId: '+5491111111111',
+        isAdmin: false,
+        channel: 'whatsapp',
+        status: 'delivered',
+        createdAt: now,
+      ),
+      openConversationIds: const [1],
+    );
+
+    expect(resolved.conversationId, 1);
+  });
+
+  test('watchChatMessages incluye mensajes con mismo wa_id en otro conversation_id',
+      () async {
+    final now = DateTime.utc(2026, 6, 5, 12);
+    await db.conversationDao.upsert(
+      ConversationsCompanion(
+        id: const Value(1),
+        businessId: const Value('default'),
+        customerWaId: const Value('+5491111111111'),
+        updatedAt: Value(now),
+        syncedAt: Value(now),
+      ),
+    );
+    await db.messageDao.upsert(
+      MessagesCompanion(
+        id: const Value(700),
+        conversationId: const Value(99),
+        direction: const Value('incoming'),
+        body: const Value('Mismo wa, otro id'),
+        waId: const Value('+5491111111111'),
+        isAdmin: const Value(false),
+        channel: const Value('whatsapp'),
+        status: const Value('delivered'),
+        createdAt: Value(now),
+      ),
+    );
+
+    final local = await repository
+        .watchChatMessages(
+          Conversation(
+            id: 1,
+            businessId: 'default',
+            customerWaId: '+5491111111111',
+            updatedAt: now,
+          ),
+        )
+        .first;
+
+    expect(local.single.body, 'Mismo wa, otro id');
   });
 
   test('resolveForLocalStore prefiere hilo local por wa_id', () async {
