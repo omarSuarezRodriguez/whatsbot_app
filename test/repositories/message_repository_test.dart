@@ -7,6 +7,8 @@ import 'package:whatsbot_app/models/message.dart';
 
 import '../helpers/test_api_client.dart';
 
+// ignore_for_file: avoid_print
+
 void main() {
   late AppDatabase db;
   late TestApiClient testApi;
@@ -214,5 +216,67 @@ void main() {
 
     expect(await repository.upsertMessageDeduped(message), isTrue);
     expect(await repository.upsertMessageDeduped(message), isFalse);
+  });
+
+  // ── Tests de persistencia durable ────────────────────────────────────────
+
+  test('retentionPerChat es 10000 (política de archivo durable)', () {
+    expect(MessageRepository.retentionPerChat, 10000);
+  });
+
+  test('pruneOldMessages conserva los mensajes más recientes según el límite',
+      () async {
+    // Seed 7 messages with sequential createdAt; prune to keep=5.
+    final base = DateTime.utc(2026, 1, 1, 12);
+    for (var i = 1; i <= 7; i++) {
+      await db.messageDao.upsert(
+        MessagesCompanion(
+          id: Value(i),
+          conversationId: const Value(1),
+          direction: const Value('incoming'),
+          body: Value('Msg $i'),
+          waId: const Value('+5491111111111'),
+          isAdmin: const Value(false),
+          channel: const Value('whatsapp'),
+          status: const Value('delivered'),
+          createdAt: Value(base.add(Duration(minutes: i))),
+        ),
+      );
+    }
+
+    await db.messageDao.pruneOldMessages(1, keep: 5);
+
+    final remaining = await db.messageDao.watchForConversation(1).first;
+    expect(remaining, hasLength(5));
+    // The 5 most recent (highest id / latest createdAt) survive.
+    expect(remaining.map((r) => r.id), containsAll([3, 4, 5, 6, 7]));
+    expect(remaining.map((r) => r.id), isNot(contains(1)));
+    expect(remaining.map((r) => r.id), isNot(contains(2)));
+  });
+
+  test('refreshFromApi incremental con API vacía no borra mensajes locales',
+      () async {
+    // Seed a local message.
+    await repository.upsertMessage(
+      ChatMessage(
+        id: 1,
+        conversationId: 1,
+        direction: 'incoming',
+        body: 'Local durable',
+        waId: '+5491111111111',
+        isAdmin: false,
+        channel: 'whatsapp',
+        status: 'delivered',
+        createdAt: DateTime.utc(2026, 6, 5, 10),
+      ),
+    );
+
+    // API returns no messages for this conversation.
+    testApi.messagesByConversation[1] = [];
+    await repository.refreshFromApi(1, incremental: true);
+
+    final local = await repository.watchMessages(1).first;
+    expect(local, hasLength(1));
+    expect(local.first.body, 'Local durable');
   });
 }

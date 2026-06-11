@@ -46,7 +46,13 @@ class MessageRepository {
   Future<List<ChatMessage>> getCachedMessages(int conversationId) =>
       watchMessages(conversationId).first;
 
-  static const int retentionPerChat = 500;
+  /// Maximum messages kept per chat in local storage.
+  ///
+  /// Policy: prune is a local storage limit only — messages are NEVER deleted
+  /// because the server stopped returning them. Server = sync channel for new
+  /// data; local SQLite = durable archive of received history. The only full
+  /// wipe is explicit user logout via [AppDatabase.clearAll].
+  static const int retentionPerChat = 10000;
 
   /// No mover mensajes entre conversaciones al sincronizar (PK = id).
   ChatMessage _preserveLocalConversation(
@@ -90,6 +96,16 @@ class MessageRepository {
     final localConv = await _db.conversationDao.getById(message.conversationId);
     if (localConv != null) return message;
 
+    // Fallthrough: no local conversation matched by id, clientUuid, wa_id, or
+    // server conversationId. SyncEngine._ensureLocalConversation should have
+    // prevented this; message will be stored under the server's conversationId.
+    assert(() {
+      // ignore: avoid_print
+      print('[resolveForLocalStore] no local conv for '
+          'id=${message.id} waId=${message.waId} '
+          'serverConvId=${message.conversationId}');
+      return true;
+    }());
     return message;
   }
 

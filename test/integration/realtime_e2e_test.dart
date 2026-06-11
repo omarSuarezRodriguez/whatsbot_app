@@ -163,6 +163,11 @@ void main() {
     expect(convs, isNotEmpty);
   });
 
+  // Note: the full WS → SyncEngine → SQLite → Drift → StreamBuilder → ChatScreen
+  // UI pipeline is covered by chat_screen_test.dart ("muestra mensaje entrante en
+  // vivo sin reabrir"). Widget tests are kept in that file where setUp/tearDown
+  // correctly wire the global apiClient singleton used by ChatScreen.
+
   test('mensaje WS con conversation_id distinto se guarda en hilo local', () async {
     await AppServices.chatRepository.upsertConversation(
       Conversation(

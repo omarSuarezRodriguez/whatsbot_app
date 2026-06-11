@@ -109,4 +109,114 @@ void main() {
     expect(merged.lastMessageAt?.toUtc(), DateTime.utc(2026, 6, 1, 15));
     expect(merged.lastMessagePreview, 'Reciente');
   });
+
+  // ── Tests de persistencia durable ────────────────────────────────────────
+
+  test('refreshFromApi con lista vacía no borra conversaciones locales', () async {
+    // Seed 2 local conversations.
+    await repository.upsertConversation(
+      Conversation(
+        id: 1,
+        businessId: 'default',
+        customerWaId: '+5491111111111',
+        customerName: 'Local A',
+        lastMessageAt: DateTime.utc(2026, 6, 1, 12),
+        updatedAt: DateTime.utc(2026, 6, 1, 12),
+      ),
+    );
+    await repository.upsertConversation(
+      Conversation(
+        id: 2,
+        businessId: 'default',
+        customerWaId: '+5492222222222',
+        customerName: 'Local B',
+        lastMessageAt: DateTime.utc(2026, 6, 1, 13),
+        updatedAt: DateTime.utc(2026, 6, 1, 13),
+      ),
+    );
+
+    // API returns empty list — sync is additive, nothing is deleted.
+    final emptyApi = TestApiClient(conversations: []);
+    await emptyApi.login();
+    final emptyRepo = ChatRepository(db, emptyApi.client);
+    await emptyRepo.refreshFromApi();
+
+    final local = await repository.watchConversations().first;
+    expect(local, hasLength(2));
+  });
+
+  test('refreshFromApi con servidor que omite conv existente no la borra', () async {
+    // Seed 2 local conversations.
+    await repository.upsertConversation(
+      Conversation(
+        id: 10,
+        businessId: 'default',
+        customerWaId: '+5491110000001',
+        customerName: 'Conv antigua',
+        updatedAt: DateTime.utc(2026, 5, 1),
+      ),
+    );
+    await repository.upsertConversation(
+      Conversation(
+        id: 11,
+        businessId: 'default',
+        customerWaId: '+5491110000002',
+        customerName: 'Conv nueva',
+        updatedAt: DateTime.utc(2026, 6, 1),
+      ),
+    );
+
+    // API only returns conv 11 (omits conv 10).
+    final partialApi = TestApiClient(
+      conversations: [
+        {
+          'id': 11,
+          'business_id': 'default',
+          'customer_wa_id': '+5491110000002',
+          'customer_name': 'Conv nueva',
+          'last_message_at': '2026-06-01T00:00:00Z',
+          'updated_at': '2026-06-01T00:00:00Z',
+        },
+      ],
+    );
+    await partialApi.login();
+    final partialRepo = ChatRepository(db, partialApi.client);
+    await partialRepo.refreshFromApi();
+
+    final local = await repository.watchConversations().first;
+    final ids = local.map((c) => c.id).toList();
+    expect(ids, containsAll([10, 11]));
+  });
+
+  test('upsertConversationFromServer con servidor viejo no retrocede preview local',
+      () async {
+    // Seed with a recent local state (optimistic send bump).
+    await repository.upsertConversation(
+      Conversation(
+        id: 5,
+        businessId: 'default',
+        customerWaId: '+5491115555555',
+        lastMessagePreview: 'Mensaje reciente del dueño',
+        lastMessageAt: DateTime.utc(2026, 6, 5, 15),
+        updatedAt: DateTime.utc(2026, 6, 5, 15),
+      ),
+    );
+
+    // Server sends stale conversation.updated event.
+    await repository.upsertConversationFromServer(
+      Conversation(
+        id: 5,
+        businessId: 'default',
+        customerWaId: '+5491115555555',
+        lastMessagePreview: 'Preview viejo del servidor',
+        lastMessageAt: DateTime.utc(2026, 6, 5, 10),
+        updatedAt: DateTime.utc(2026, 6, 5, 10),
+      ),
+    );
+
+    final conv = await repository.getConversation(5);
+    // mergeWithLocal protects the local preview because local lastMessageAt > server.
+    expect(conv?.lastMessagePreview, 'Mensaje reciente del dueño');
+    expect(conv?.lastMessageAt?.toUtc(), DateTime.utc(2026, 6, 5, 15));
+  });
 }

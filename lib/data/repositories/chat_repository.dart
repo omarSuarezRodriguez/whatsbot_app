@@ -4,6 +4,10 @@ import '../../services/api_client.dart';
 import '../local/app_database.dart';
 
 /// Conversaciones: lectura local instantánea + hidratación HTTP en background.
+///
+/// Sync policy: all writes are additive (upsert by id). Conversations and
+/// messages are NEVER deleted because the server stops returning them.
+/// The only full wipe is explicit user logout via [AppDatabase.clearAll].
 class ChatRepository {
   ChatRepository(this._db, this._api);
 
@@ -136,12 +140,10 @@ class ChatRepository {
     );
   }
 
-  /// Persiste conversación del servidor sin que [mergeWithLocal] bloquee el preview.
+  /// Persiste conversación del servidor aplicando [mergeWithLocal] para
+  /// proteger el preview/lastMessageAt local si el servidor manda datos viejos.
   Future<void> upsertConversationFromServer(Conversation conversation) async {
-    final seen = await _db.conversationDao.getLastSeen(conversation.id);
-    await _db.conversationDao.upsert(
-      conversation.toLocalRow(lastSeenAtOverride: seen),
-    );
+    await upsertConversation(conversation);
   }
 
   Future<void> markSeen(int conversationId, DateTime seenAt) async {

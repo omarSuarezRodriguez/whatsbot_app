@@ -13,6 +13,7 @@ import 'package:whatsbot_app/screens/chat_screen.dart';
 import 'package:whatsbot_app/services/api_client.dart';
 import 'package:whatsbot_app/services/realtime_service.dart';
 import 'package:whatsbot_app/widgets/message_bubble.dart';
+import 'package:whatsbot_app/widgets/typing_indicator.dart';
 
 import '../helpers/realtime_test_helper.dart';
 import '../helpers/test_api_client.dart';
@@ -642,4 +643,173 @@ void main() {
 
     await disposeWidgetTree(tester);
   });
+
+  // ── Nuevos tests Fase 3 ──────────────────────────────────────────────────
+
+  testWidgets(
+    'ChatScreen usa StreamBuilder sobre watchMessages como única fuente de verdad',
+    (WidgetTester tester) async {
+      await pumpChatScreen(tester, fromSqliteOnly: true);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // The message list must be driven by a StreamBuilder, not a local list.
+      expect(
+        find.byType(StreamBuilder<List<ChatMessage>>),
+        findsOneWidget,
+      );
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
+    'ChatScreen refleja message.status delivered vía Drift sin Path B',
+    (WidgetTester tester) async {
+      // Seed an outgoing admin message with status 'sent'.
+      await AppServices.messageRepository.upsertMessage(
+        ChatMessage(
+          id: 100,
+          conversationId: 1,
+          direction: 'outgoing',
+          body: 'Mensaje saliente',
+          waId: '+5491111111111',
+          isAdmin: true,
+          channel: 'whatsapp',
+          status: 'sent',
+          createdAt: DateTime.utc(2026, 6, 5, 11),
+        ),
+      );
+
+      await pumpChatScreen(tester, fromSqliteOnly: false, seedSqlite: false);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Mensaje saliente'), findsOneWidget);
+      // 'sent' → Icons.done
+      expect(find.byIcon(Icons.done), findsOneWidget);
+      expect(find.byIcon(Icons.done_all), findsNothing);
+
+      // Emit status update via SyncEngine → Drift → StreamBuilder.
+      await emitRealtimeEvent(
+        RealtimeEvent(
+          type: 'message.status',
+          messageId: 100,
+          status: 'delivered',
+          deliveredAt: DateTime.utc(2026, 6, 5, 11, 1),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // 'delivered' → Icons.done_all (grey)
+      expect(find.byIcon(Icons.done_all), findsOneWidget);
+      expect(find.byIcon(Icons.done), findsNothing);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
+    'ChatScreen refleja message.status read vía Drift sin Path B',
+    (WidgetTester tester) async {
+      await AppServices.messageRepository.upsertMessage(
+        ChatMessage(
+          id: 101,
+          conversationId: 1,
+          direction: 'outgoing',
+          body: 'Leído por el cliente',
+          waId: '+5491111111111',
+          isAdmin: true,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: DateTime.utc(2026, 6, 5, 11, 5),
+        ),
+      );
+
+      await pumpChatScreen(tester, fromSqliteOnly: false, seedSqlite: false);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.byIcon(Icons.done_all), findsOneWidget);
+
+      await emitRealtimeEvent(
+        RealtimeEvent(
+          type: 'message.status',
+          messageId: 101,
+          status: 'read',
+          readAt: DateTime.utc(2026, 6, 5, 11, 6),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // 'read' → Icons.done_all in blue — still done_all icon, same widget type.
+      final ticks = tester
+          .widgetList<MessageBubble>(find.byType(MessageBubble))
+          .where((b) => b.message.body == 'Leído por el cliente')
+          .map((b) => b.message.status)
+          .toList();
+      expect(ticks, ['read']);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
+    'ChatScreen muestra TypingIndicator en typing.start y lo oculta en typing.stop',
+    (WidgetTester tester) async {
+      await pumpChatScreen(tester, fromSqliteOnly: true);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // No typing indicator initially.
+      expect(find.byType(TypingIndicator), findsNothing);
+      final initialBubbles =
+          tester.widgetList<MessageBubble>(find.byType(MessageBubble)).length;
+
+    // typing.start — ephemeral, outside message stream.
+    await emitRealtimeEvent(
+      RealtimeEvent(type: 'typing.start', conversationId: 1),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.byType(TypingIndicator), findsOneWidget);
+    // No extra MessageBubble rows added.
+    expect(
+      tester.widgetList<MessageBubble>(find.byType(MessageBubble)).length,
+      initialBubbles,
+    );
+
+    // typing.stop — indicator disappears.
+    await emitRealtimeEvent(
+      RealtimeEvent(type: 'typing.stop', conversationId: 1),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.byType(TypingIndicator), findsNothing);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
+    'ChatScreen con SQLite-only (sin initialMessages) muestra historial completo',
+    (WidgetTester tester) async {
+      // Seed directly, open without initialMessages.
+      await seedMessages();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ChatScreen(conversation: conversation()),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Hola desde el cliente'), findsOneWidget);
+      expect(find.text('Respuesta del admin'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      await disposeWidgetTree(tester);
+    },
+  );
 }

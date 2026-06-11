@@ -98,7 +98,6 @@ class _ChatsListScreenState extends State<ChatsListScreen> {
       default:
         break;
     }
-    if (mounted) setState(() {});
   }
 
   Future<void> _openChat(Conversation chat) async {

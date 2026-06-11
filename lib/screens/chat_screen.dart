@@ -40,8 +40,13 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _sending = false;
   bool _orderBusy = false;
   bool _peerTyping = false;
-  List<ChatMessage> _displayMessages = [];
+
+  // Single Drift stream shared by StreamBuilder (UI) and side-effect listener.
   late final Stream<List<ChatMessage>> _messagesStream;
+
+  // Tracks previous snapshot for scroll/seen side effects only — NOT for UI state.
+  List<ChatMessage> _lastSideEffectMessages = [];
+
   Timer? _typingStopTimer;
   StreamSubscription<RealtimeEvent>? _realtimeSub;
   StreamSubscription<bool>? _connectivitySub;
@@ -55,11 +60,11 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _messagesStream = _messageRepo.watchMessages(widget.conversation.id);
-    _displayMessages = List<ChatMessage>.from(widget.initialMessages ?? []);
-    if (_displayMessages.isNotEmpty) {
-      _displayMessages.sort(ChatMessage.compareChronological);
-    }
+    // Broadcast so both StreamBuilder and side-effect listener share one DB watcher.
+    _messagesStream = _messageRepo
+        .watchMessages(widget.conversation.id)
+        .asBroadcastStream();
+
     AppServices.syncEngine.trackOpenConversation(widget.conversation.id);
     messageAlerts.setActiveConversation(widget.conversation.id);
     _inputController.addListener(_onInputChanged);
@@ -78,7 +83,8 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     _updateWsFallbackTimer(realtimeService.isConnected);
-    _messagesSub = _messagesStream.listen(_onMessagesFromStore);
+    // Side-effect listener: scroll and seen tracking only — no setState for messages.
+    _messagesSub = _messagesStream.listen(_onMessagesForSideEffects);
     SchedulerBinding.instance.scheduleFrameCallback((_) {
       unawaited(_markRead());
       unawaited(_refresh(silent: true));
@@ -106,155 +112,24 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  bool _messageBelongsToChat(ChatMessage message) {
-    if (message.conversationId == widget.conversation.id) return true;
-    return _sameWa(message.waId, widget.conversation.customerWaId);
-  }
-
-  void _onMessagesFromStore(List<ChatMessage> storeMessages) {
-    _applyStoreSnapshot(storeMessages);
-  }
-
-  void _applyStoreSnapshot(
-    List<ChatMessage> storeMessages, {
-    bool scrollIfNearBottom = true,
-  }) {
+  // Side effects triggered by new Drift emissions — never mutates UI state.
+  void _onMessagesForSideEffects(List<ChatMessage> messages) {
     if (!mounted) return;
 
-    final previousCount = _displayMessages.length;
-    final prevLastId =
-        _displayMessages.isNotEmpty ? _displayMessages.last.id : null;
-    final next = _reconcileWithStore(storeMessages);
-    final changed = _messagesSnapshotChanged(_displayMessages, next);
-    _displayMessages = next;
+    final prev = _lastSideEffectMessages;
+    final hadGrowth = messages.length > prev.length ||
+        (messages.isNotEmpty &&
+            prev.isNotEmpty &&
+            messages.last.id != prev.last.id);
+    _lastSideEffectMessages = messages;
 
-    final hadGrowth = _displayMessages.length > previousCount ||
-        (_displayMessages.isNotEmpty && _displayMessages.last.id != prevLastId);
-
-    if (_displayMessages.isNotEmpty) {
-      unawaited(_persistSeen(_displayMessages));
+    if (messages.isNotEmpty) {
+      unawaited(_persistSeen(messages));
     }
-
-    if (scrollIfNearBottom && hadGrowth && _isNearBottom()) {
-      _scrollToBottom(animated: true);
+    if (hadGrowth) {
+      unawaited(_markRead());
+      if (_isNearBottom()) _scrollToBottom(animated: true);
     }
-
-    if (changed) setState(() {});
-  }
-
-  Future<void> _reloadDisplayFromStore({bool scrollIfNearBottom = false}) async {
-    if (!mounted) return;
-    final store =
-        await _messageRepo.watchMessages(widget.conversation.id).first;
-    if (!mounted) return;
-    _applyStoreSnapshot(store, scrollIfNearBottom: scrollIfNearBottom);
-  }
-
-  bool _messagesSnapshotChanged(
-    List<ChatMessage> before,
-    List<ChatMessage> after,
-  ) {
-    if (before.length != after.length) return true;
-    for (var i = 0; i < before.length; i++) {
-      final a = before[i];
-      final b = after[i];
-      if (a.id != b.id ||
-          a.status != b.status ||
-          a.body != b.body ||
-          a.deliveredAt != b.deliveredAt ||
-          a.readAt != b.readAt) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  List<ChatMessage> _reconcileWithStore(List<ChatMessage> store) {
-    final storeIds = {for (final m in store) m.id};
-    final storeByClientUuid = <String, ChatMessage>{
-      for (final m in store)
-        if (m.clientUuid != null && m.clientUuid!.isNotEmpty) m.clientUuid!: m,
-    };
-
-    final merged = List<ChatMessage>.from(store);
-    for (final message in _displayMessages) {
-      if (storeIds.contains(message.id)) continue;
-      if (message.clientUuid != null &&
-          message.clientUuid!.isNotEmpty &&
-          storeByClientUuid.containsKey(message.clientUuid!)) {
-        continue;
-      }
-      if (_messageBelongsToChat(message)) {
-        merged.add(message);
-      }
-    }
-
-    merged.sort(ChatMessage.compareChronological);
-    return merged;
-  }
-
-  bool _mergeMessageIntoDisplay(ChatMessage incoming) {
-    final local = incoming.copyWith(conversationId: widget.conversation.id);
-
-    if (incoming.clientUuid != null && incoming.clientUuid!.isNotEmpty) {
-      final idx = _displayMessages.indexWhere(
-        (m) => m.clientUuid == incoming.clientUuid,
-      );
-      if (idx >= 0) {
-        final wasPending = _displayMessages[idx].status == 'pending';
-        _displayMessages[idx] =
-            _mergeMessageFields(_displayMessages[idx], local);
-        _sortDisplayMessages();
-        return wasPending || _displayMessages[idx].id != incoming.id;
-      }
-    }
-
-    final byId = _displayMessages.indexWhere((m) => m.id == incoming.id);
-    if (byId >= 0) {
-      _displayMessages[byId] =
-          _mergeMessageFields(_displayMessages[byId], local);
-      _sortDisplayMessages();
-      return false;
-    }
-
-    _displayMessages.add(local);
-    _sortDisplayMessages();
-    return true;
-  }
-
-  ChatMessage _mergeMessageFields(ChatMessage existing, ChatMessage incoming) {
-    return ChatMessage(
-      id: incoming.id,
-      conversationId: widget.conversation.id,
-      direction: incoming.direction,
-      body: incoming.body,
-      waId: incoming.waId,
-      isAdmin: incoming.isAdmin,
-      channel: incoming.channel,
-      status: incoming.status,
-      deliveredAt: incoming.deliveredAt ?? existing.deliveredAt,
-      readAt: incoming.readAt ?? existing.readAt,
-      createdAt: incoming.createdAt,
-      clientUuid: incoming.clientUuid ?? existing.clientUuid,
-    );
-  }
-
-  void _applyStatusUpdate(RealtimeEvent event) {
-    final messageId = event.messageId;
-    if (messageId == null) return;
-
-    final idx = _displayMessages.indexWhere((m) => m.id == messageId);
-    if (idx < 0) return;
-
-    _displayMessages[idx] = _displayMessages[idx].copyWith(
-      status: event.status ?? _displayMessages[idx].status,
-      deliveredAt: event.deliveredAt ?? _displayMessages[idx].deliveredAt,
-      readAt: event.readAt ?? _displayMessages[idx].readAt,
-    );
-  }
-
-  void _sortDisplayMessages() {
-    _displayMessages.sort(ChatMessage.compareChronological);
   }
 
   Future<void> _markConversationSeenOnExit() async {
@@ -307,26 +182,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
 
     switch (event.type) {
-      case 'message.new':
-        final message = event.message;
-        if (message == null) break;
-        final resolved = await _messageRepo.resolveForLocalStore(message);
-        if (!_messageBelongsToChat(resolved)) break;
-        final hadGrowth = _mergeMessageIntoDisplay(resolved);
-        setState(() {});
-        if (hadGrowth && _isNearBottom()) {
-          _scrollToBottom(animated: true);
-        }
-        unawaited(_refresh(silent: true, force: true));
-        if (!message.isOutgoing) {
-          unawaited(_markRead());
-        }
-        break;
-      case 'message.status':
-        _applyStatusUpdate(event);
-        setState(() {});
-        unawaited(_refresh(silent: true, force: true));
-        break;
+      // message.new and message.status are handled exclusively by SyncEngine →
+      // SQLite → Drift stream → StreamBuilder. No direct UI mutation here.
       case 'conversation.updated':
       case 'conversation.sync':
         unawaited(_refresh(silent: true, force: true));
@@ -394,13 +251,15 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (!mounted) return;
       if (showLoading) setState(() => _refreshing = false);
-      await _reloadDisplayFromStore(scrollIfNearBottom: true);
+      // Drift stream auto-emits after sync — no manual reload needed.
+      final msgs =
+          await _messageRepo.getCachedMessages(widget.conversation.id);
       if (!mounted) return;
-      if (_displayMessages.isNotEmpty) {
+      if (msgs.isNotEmpty) {
         await messageAlerts.handleChatMessages(
           conversationId: widget.conversation.id,
           displayName: widget.conversation.displayName,
-          messages: _displayMessages,
+          messages: msgs,
         );
       }
     } catch (_) {
@@ -467,8 +326,7 @@ class _ChatScreenState extends State<ChatScreen> {
         body: text,
       );
       if (!mounted) return;
-      await _reloadDisplayFromStore(scrollIfNearBottom: true);
-      if (!mounted) return;
+      // Drift stream auto-emits the optimistic message; force scroll to bottom.
       _scrollToBottom(force: true);
       if (result.queued) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -556,29 +414,36 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Container(
               color: WhatsAppTheme.chatBackground,
-              child: _displayMessages.isEmpty && _refreshing
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView.builder(
-                      controller: _scrollController,
-                      reverse: true,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: _displayMessages.length + typingOffset,
-                      itemBuilder: (_, i) {
-                        if (_peerTyping && i == 0) {
-                          return const TypingIndicator();
-                        }
-                        final messageIndex = _displayMessages.length -
-                            1 -
-                            (i - typingOffset);
-                        final message = _displayMessages[messageIndex];
-                        return MessageBubble(
-                          key: ValueKey(
-                            message.clientUuid ?? 'msg-${message.id}',
-                          ),
-                          message: message,
-                        );
-                      },
-                    ),
+              child: StreamBuilder<List<ChatMessage>>(
+                stream: _messagesStream,
+                initialData: widget.initialMessages,
+                builder: (context, snapshot) {
+                  final messages = snapshot.data ?? const [];
+                  if (messages.isEmpty && _refreshing) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  return ListView.builder(
+                    controller: _scrollController,
+                    reverse: true,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: messages.length + typingOffset,
+                    itemBuilder: (_, i) {
+                      if (_peerTyping && i == 0) {
+                        return const TypingIndicator();
+                      }
+                      final messageIndex =
+                          messages.length - 1 - (i - typingOffset);
+                      final message = messages[messageIndex];
+                      return MessageBubble(
+                        key: ValueKey(
+                          message.clientUuid ?? 'msg-${message.id}',
+                        ),
+                        message: message,
+                      );
+                    },
+                  );
+                },
+              ),
             ),
           ),
           Material(

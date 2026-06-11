@@ -105,6 +105,12 @@ class SyncEngine {
     final message = event.message;
     if (message == null) return;
 
+    // Ensure the local conversation exists before resolving the message's
+    // conversationId. Without this, resolveForLocalStore may fall through and
+    // store the message under the server's conversationId, which no open
+    // ChatScreen watches.
+    await _ensureLocalConversation(event, message);
+
     final resolved = await _messages.resolveForLocalStore(message);
     await _messages.upsertMessageDeduped(resolved);
     await _bumpConversationForMessage(event, resolved);
@@ -115,6 +121,28 @@ class SyncEngine {
       if (conversation != null && notify != null) {
         await notify(conversation, resolved);
       }
+    }
+  }
+
+  /// Guarantees a local conversation row exists for [message] so that
+  /// [resolveForLocalStore] can bind the message to the correct local id.
+  Future<void> _ensureLocalConversation(
+    RealtimeEvent event,
+    ChatMessage message,
+  ) async {
+    var conv = await _chats.getConversation(message.conversationId) ??
+        await _chats.findConversationByWaId(message.waId);
+    if (conv != null) return;
+
+    // Not found locally — pull fresh conversation list from server.
+    await syncConversationsIncremental();
+    conv = await _chats.getConversation(message.conversationId) ??
+        await _chats.findConversationByWaId(message.waId);
+    if (conv != null) return;
+
+    // Use the inline conversation from the WS event as last resort.
+    if (event.conversation != null) {
+      await _chats.upsertConversationFromServer(event.conversation!);
     }
   }
 
