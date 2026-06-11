@@ -1,4 +1,4 @@
-## 1.6 - Chat totalmente funcional
+## 1.6 - Chat totalmente funcional (resubido por si acaso)
 
 
 
