@@ -579,6 +579,49 @@ void main() {
     expect(thread.last.body, 'Nuevo en vivo');
   });
 
+  test('normalizeIncomingChronology coloca respuesta bot con created_at viejo al final',
+      () async {
+    await repository.upsertMessage(
+      ChatMessage(
+        id: 180,
+        conversationId: 1,
+        direction: 'incoming',
+        body: 'Cliente',
+        waId: '+5491111111111',
+        isAdmin: false,
+        channel: 'whatsapp',
+        status: 'delivered',
+        createdAt: DateTime.utc(2026, 6, 10, 18),
+      ),
+    );
+
+    final botReply = ChatMessage(
+      id: 182,
+      conversationId: 1,
+      direction: 'outgoing',
+      body: 'Respuesta bot',
+      waId: '+5491111111111',
+      isAdmin: false,
+      channel: 'whatsapp',
+      status: 'delivered',
+      createdAt: DateTime.utc(2026, 6, 1, 8),
+    );
+
+    final normalized = await repository.normalizeIncomingChronology(botReply);
+    expect(normalized.createdAt.isAfter(DateTime.utc(2026, 6, 10, 18)), isTrue);
+
+    await repository.upsertMessage(normalized, alreadyResolved: true);
+    final thread = await repository.getCachedChatMessages(
+      Conversation(
+        id: 1,
+        businessId: 'default',
+        customerWaId: '+5491111111111',
+        updatedAt: DateTime.utc(2026, 6, 10, 18),
+      ),
+    );
+    expect(thread.last.body, 'Respuesta bot');
+  });
+
   test('refreshFromApi incremental con API vacía no borra mensajes locales',
       () async {
     // Seed a local message.

@@ -78,10 +78,9 @@ class MessageRepository {
     return _mapSorted(rows).last;
   }
 
-  /// WS a veces trae `created_at` anterior al último del hilo; fuerza orden local.
+  /// WS/REST a veces trae `created_at` anterior al último del hilo; fuerza orden local.
+  /// Aplica a entrantes y salientes (admin, bot) con id nuevo.
   Future<ChatMessage> normalizeIncomingChronology(ChatMessage message) async {
-    if (message.isOutgoing) return message;
-
     final latest = await getLatestChronologicalInThread(
       message.conversationId,
       message.waId,

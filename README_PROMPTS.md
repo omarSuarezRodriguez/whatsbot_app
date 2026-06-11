@@ -1,4 +1,4 @@
-## 1.6 - Chat totalmente funcional (resubido por si acaso)
+## 1.7 - mejora incremental al chat
 
 
 
@@ -2246,6 +2246,12 @@ Para el futuro: si la lista de chats se actualiza pero el chat abierto no muestr
 
 
 ###################################################
+## 1.7 - mejora incremental al chat
+
+Ya se visualizan también los mensajes del bot, solo quedan mejoras menores
+
+
+
 
 
 
