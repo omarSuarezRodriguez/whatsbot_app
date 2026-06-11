@@ -1,4 +1,4 @@
-## 1.4
+## 1.5
 
 
 
@@ -1991,6 +1991,228 @@ Con un chat abierto, al llegar un mensaje por WebSocket:
 ChatsListScreen sigue actualizando el preview ✓
 ChatScreen muestra el mensaje nuevo sin pull-to-refresh ✓
 El pull-to-refresh seguía funcionando porque refreshFromApi re-leía por wa_id y reconciliaba; ahora el camino en vivo (WS → SQLite → Drift) está alineado con ese comportamiento.
+
+
+
+
+
+###################################################
+## 1.5
+
+
+## Objetivo
+Diagnosticar y arreglar el bug de WhatsBot Flutter con **certeza** (código + tests + evidencia por capa).
+Cubrir las 3 hipótesis: datos, stream y visualización.
+
+## Síntoma
+- **ChatsListScreen** (lista de chats / bandeja / inbox) → SÍ se actualiza sola en vivo cuando llega un mensaje.
+- **ChatScreen** (chat abierto / ventana de chat / conversación abierta) → NO muestra el mensaje nuevo mientras tienes el chat abierto.
+- **Comportamiento esperado:** ChatScreen debería actualizarse solo en vivo, igual que ChatsListScreen.
+
+El backend parece OK (la lista reacciona sola). El bug está en Flutter; hay que identificar en qué capa exacta.
+
+---
+
+## Pasos para reproducir
+1. Abro un chat → entro a **ChatScreen** (chat abierto).
+2. Llega un mensaje nuevo (desde WhatsApp / tiempo real).
+3. **ChatsListScreen** ya muestra el preview actualizado ✓
+4. **ChatScreen** sigue sin mostrar el mensaje en el historial ✗
+
+---
+
+## Hipótesis A — Datos / conversationId (~70% probable)
+El mensaje llega a la app pero se guarda en SQLite bajo un `conversationId` que ChatScreen no observa.
+
+Revisar pipeline completo:
+- `SyncEngine._handleMessageNew` → `_ensureLocalConversation` → `resolveForLocalStore` → `_bindToOpenConversation` → `upsertMessageDeduped`
+- Que `upsertMessageDeduped` NO re-resuelva y deshaga el id del chat abierto (`alreadyResolved: true` o equivalente)
+- Que `trackOpenConversation` / `untrackOpenConversation` se llamen en ChatScreen init/dispose
+- Que `watchChatMessages` / `watchForChatThread` incluya mensajes del mismo `wa_id` aunque el servidor use otro `conversation_id`
+
+**Caso crítico:** mensaje con `conversation_id: 99` (servidor), chat abierto `id: 1`, mismo `wa_id` → debe verse en ChatScreen en vivo, con el chat aún abierto.
+
+---
+
+## Hipótesis B — Stream en ChatScreen (~20% probable)
+El dato está en SQLite pero ChatScreen no recibe o no reacciona al stream.
+
+En `lib/screens/chat_screen.dart`:
+- Stream creado UNA vez en `initState`, NUNCA en `build()`
+- Evitar `asBroadcastStream()` si hace que StreamBuilder pierda emisiones (suscriptores tardíos)
+- Si hay dos listeners (StreamBuilder + side effects scroll/seen), usar dos streams Drift independientes en `initState` o patrón seguro
+- Una sola fuente de verdad para mensajes: SQLite + Drift watch. NO mutar UI desde WS (`message.new` / `message.status`) en ChatScreen
+
+---
+
+## Hipótesis C — Visualización pura (~10% probable, descartar antes de cerrar)
+El mensaje SÍ está en SQLite y el stream SÍ emite, pero la UI no lo muestra.
+
+Revisar en ChatScreen:
+- ¿`StreamBuilder` reconstruye cuando llega snapshot nuevo?
+- ¿`ListView.builder` con `reverse: true` oculta el mensaje por posición de scroll?
+- ¿Keys duplicadas en `MessageBubble` (`ValueKey` por `clientUuid` / `id`) impiden insertar el widget nuevo?
+- ¿`initialData: widget.initialMessages` congela el estado y no deja avanzar al stream?
+- ¿Al cerrar y reabrir el chat ya aparece el mensaje? → si sí, apunta a stream/visual en vivo, no a que nunca se guardó
+
+---
+
+## Diagnóstico obligatorio (capa por capa, con evidencia)
+
+Con el chat abierto y un mensaje nuevo que la lista ya refleja, reportar OK o ROTO:
+
+| Capa | Pregunta |
+|------|----------|
+| 1 | ¿El evento llegó a la app? (ChatsListScreen se actualizó sola = sí) |
+| 2 | ¿SyncEngine persistió en SQLite? |
+| 3 | ¿Qué `conversationId` tiene la fila en `messages`? |
+| 4 | ¿Ese id lo cubre `watchChatMessages` / `watchForChatThread`? |
+| 5 | ¿El watch emite al insertar? |
+| 6 | ¿`StreamBuilder` recibe el snapshot nuevo? |
+| 7 | ¿El `ListView` debería pintarlo (keys, scroll, itemCount)? |
+
+**Regla:** capas 1–5 OK pero 6–7 ROTO → fix stream/visual. Capas 2–4 ROTO → fix datos.
+
+---
+
+## Archivos clave
+- `lib/screens/chat_screen.dart` — chat abierto (roto)
+- `lib/screens/chats_list_screen.dart` — lista (funciona, solo referencia)
+- `lib/data/repositories/message_repository.dart`
+- `lib/data/sync/sync_engine.dart`
+- `lib/data/local/daos/message_dao.dart`
+- `lib/di/app_services.dart`
+- `test/screens/chat_screen_test.dart`
+- `test/repositories/message_repository_test.dart`
+- `test/sync/sync_engine_test.dart`
+
+---
+
+## Fix requerido
+- Cambios mínimos para las capas que fallen (A, B y/o C)
+- Sin reintroducir Path B (`_displayMessages` mutado desde WS)
+- ChatScreen debe actualizarse **automáticamente en vivo**, igual que ChatsListScreen
+- Logs temporales de debug solo si hacen falta (`kDebugMode`)
+
+---
+
+## Tests obligatorios
+1. Chat abierto + mensaje nuevo con `conversation_id` servidor distinto pero mismo `wa_id` → visible en ChatScreen en vivo
+2. Chat con `initialMessages` precargados → mensaje nuevo aparece mientras ChatScreen está montado
+3. Mensaje bajo id “huérfano” → `watchChatMessages` lo incluye
+4. (Si aplica) StreamBuilder recibe emisión tras insert en SQLite mientras ChatScreen está montado
+
+---
+
+## Verificación ejecutada (reportar resultados)
+flutter test test/screens/chat_screen_test.dart
+flutter test test/repositories/message_repository_test.dart
+flutter test test/sync/sync_engine_test.dart
+dart analyze lib/screens/chat_screen.dart lib/data/repositories/message_repository.dart lib/data/sync/sync_engine.dart lib/data/local/daos/message_dao.dart
+
+---
+
+## Criterio de éxito
+- [ ] Capa fallida identificada (A datos / B stream / C visual)
+- [ ] Con chat abierto, mensaje nuevo → aparece en ChatScreen en vivo, sin reabrir el chat
+- [ ] ChatsListScreen sigue actualizándose sola
+- [ ] Tests pasan
+- [ ] Indicar si hace falta **rebuild completo del APK** (no hot reload) para probar en dispositivo
+
+## No cerrar el task hasta
+Demostrar con código + tests que ChatScreen se actualiza en vivo igual que ChatsListScreen.
+
+
+
+## resp cursor ##
+
+Diagnóstico por capa
+Capa	Estado	Evidencia
+1 — Evento llega
+OK
+ChatsListScreen se actualiza sola → WS/SyncEngine recibe message.new
+2 — Persistencia SQLite
+OK
+SyncEngine + tests de sync_engine_test.dart confirman upsertMessageDeduped
+3 — conversationId en fila
+Parcial
+A veces el mensaje queda bajo id servidor (99) aunque el chat abierto sea id 1; _bindToOpenConversation mitiga pero no cubre todos los casos
+4 — watchChatMessages cubre el id
+ROTO
+watchForChatThread solo escuchaba watchForConversation(localId); un insert bajo otro conversation_id no disparaba el watch
+5 — El watch emite al insertar
+ROTO
+Mismo bug: insert huérfano → sin emisión
+6 — StreamBuilder recibe snapshot
+ROTO (secundario)
+asBroadcastStream() + listener en initState antes que StreamBuilder → suscriptor tardío sin replay de Drift
+7 — ListView debería pintarlo
+OK
+Keys, reverse, scroll correctos; al reabrir el chat sí aparecía → bug de stream, no de UI
+Capa fallida principal: A + B — datos huérfanos no disparaban el watch; además el patrón broadcast impedía que StreamBuilder recibiera emisiones de forma fiable.
+
+ChatsListScreen funciona porque observa watchConversations() y _bumpConversationForMessage actualiza por wa_id, independiente del conversation_id del mensaje.
+
+Fixes aplicados
+1. message_dao.dart — watchForChatThread observa toda la tabla
+Antes solo reaccionaba a cambios en el conversationId local. Ahora escucha cualquier cambio en messages y filtra por id local + mismo wa_id:
+
+
+message_dao.dart
+Lines 24-46
+  Stream<List<MessageEntity>> watchForChatThread(
+    int conversationId,
+    bool Function(String waId) waMatches,
+  ) {
+    return (select(messages)..orderBy([
+          (t) => OrderingTerm.asc(t.createdAt),
+          (t) => OrderingTerm.asc(t.id),
+        ]))
+        .watch()
+        .map((rows) {
+      // ... filtra por conversationId local o wa_id coincidente
+    });
+  }
+2. chat_screen.dart — dos streams Drift independientes (sin asBroadcastStream)
+
+chat_screen.dart
+Lines 63-67
+    _uiMessagesStream = _messageRepo.watchChatMessages(widget.conversation);
+    _sideEffectMessagesStream =
+        _messageRepo.watchChatMessages(widget.conversation);
+Cada suscriptor tiene su propio watch de Drift con replay inicial.
+
+Tests añadidos / verificación
+Test	Resultado
+watchChatMessages emite en vivo al insertar mensaje huérfano
+Pasa
+ChatScreen muestra mensaje huérfano en vivo mientras está abierto
+Pasa
+Resto de chat_screen_test.dart (48 tests)
+Pasa
+message_repository_test.dart (14 tests)
+Pasa
+sync_engine_test.dart (10 tests)
+Pasa
+dart analyze en archivos clave
+Sin issues
+Criterio de éxito
+
+ Capa fallida identificada: A (watch huérfanos) + B (broadcast stream)
+
+ ChatScreen se actualiza en vivo con mensaje nuevo (mismo wa_id, distinto conversation_id)
+
+ ChatsListScreen sin cambios — sigue funcionando
+
+ Tests pasan
+
+ Rebuild completo del APK recomendado para probar en dispositivo (flutter run con hot restart o flutter build apk + reinstalar). Hot reload no recrea los streams de initState ni el watch de Drift ya montado.
+Cómo validar en dispositivo
+flutter run (o rebuild completo del APK).
+Abre un chat en ChatScreen.
+Envía un mensaje desde WhatsApp.
+La lista debe actualizarse y el mensaje debe aparecer en el historial sin cerrar el chat.
+Si tras rebuild completo sigue fallando, el siguiente sospechoso sería que trackOpenConversation no esté activo (p. ej. chat abierto por otra ruta); en el flujo normal desde ChatsListScreen está cubierto en initState/dispose.
 
 
 

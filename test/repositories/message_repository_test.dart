@@ -244,6 +244,63 @@ void main() {
     expect(resolved.conversationId, 1);
   });
 
+  test('watchChatMessages emite en vivo al insertar mensaje huérfano con mismo wa_id',
+      () async {
+    final now = DateTime.utc(2026, 6, 5, 12);
+    await db.conversationDao.upsert(
+      ConversationsCompanion(
+        id: const Value(1),
+        businessId: const Value('default'),
+        customerWaId: const Value('+5491111111111'),
+        updatedAt: Value(now),
+        syncedAt: Value(now),
+      ),
+    );
+    await db.messageDao.upsert(
+      MessagesCompanion(
+        id: const Value(1),
+        conversationId: const Value(1),
+        direction: const Value('incoming'),
+        body: const Value('Historial local'),
+        waId: const Value('+5491111111111'),
+        isAdmin: const Value(false),
+        channel: const Value('whatsapp'),
+        status: const Value('delivered'),
+        createdAt: Value(now),
+      ),
+    );
+
+    final conv = Conversation(
+      id: 1,
+      businessId: 'default',
+      customerWaId: '+5491111111111',
+      updatedAt: now,
+    );
+    final stream = repository.watchChatMessages(conv);
+    final emissions = <List<ChatMessage>>[];
+    final sub = stream.listen(emissions.add);
+    await Future<void>.delayed(Duration.zero);
+    expect(emissions.last.single.body, 'Historial local');
+
+    await db.messageDao.upsert(
+      MessagesCompanion(
+        id: const Value(900),
+        conversationId: const Value(99),
+        direction: const Value('incoming'),
+        body: const Value('Huérfano en vivo'),
+        waId: const Value('+5491111111111'),
+        isAdmin: const Value(false),
+        channel: const Value('whatsapp'),
+        status: const Value('delivered'),
+        createdAt: Value(now.add(const Duration(minutes: 1))),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(emissions.last.map((m) => m.body), contains('Huérfano en vivo'));
+    await sub.cancel();
+  });
+
   test('watchChatMessages incluye mensajes con mismo wa_id en otro conversation_id',
       () async {
     final now = DateTime.utc(2026, 6, 5, 12);

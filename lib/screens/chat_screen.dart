@@ -41,8 +41,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _orderBusy = false;
   bool _peerTyping = false;
 
-  // Single Drift stream shared by StreamBuilder (UI) and side-effect listener.
-  late final Stream<List<ChatMessage>> _messagesStream;
+  // Dos watches Drift independientes: broadcast sobre un solo watch pierde
+  // emisiones para el StreamBuilder (suscriptor tardío).
+  late final Stream<List<ChatMessage>> _uiMessagesStream;
+  late final Stream<List<ChatMessage>> _sideEffectMessagesStream;
 
   // Tracks previous snapshot for scroll/seen side effects only — NOT for UI state.
   List<ChatMessage> _lastSideEffectMessages = [];
@@ -60,10 +62,9 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Broadcast so both StreamBuilder and side-effect listener share one DB watcher.
-    _messagesStream = _messageRepo
-        .watchChatMessages(widget.conversation)
-        .asBroadcastStream();
+    _uiMessagesStream = _messageRepo.watchChatMessages(widget.conversation);
+    _sideEffectMessagesStream =
+        _messageRepo.watchChatMessages(widget.conversation);
 
     AppServices.syncEngine.trackOpenConversation(widget.conversation.id);
     messageAlerts.setActiveConversation(widget.conversation.id);
@@ -84,7 +85,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _updateWsFallbackTimer(realtimeService.isConnected);
     // Side-effect listener: scroll and seen tracking only — no setState for messages.
-    _messagesSub = _messagesStream.listen(_onMessagesForSideEffects);
+    _messagesSub = _sideEffectMessagesStream.listen(_onMessagesForSideEffects);
     SchedulerBinding.instance.scheduleFrameCallback((_) {
       unawaited(_markRead());
       unawaited(_refresh(silent: true));
@@ -415,7 +416,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Container(
               color: WhatsAppTheme.chatBackground,
               child: StreamBuilder<List<ChatMessage>>(
-                stream: _messagesStream,
+                stream: _uiMessagesStream,
                 initialData: widget.initialMessages,
                 builder: (context, snapshot) {
                   final messages = snapshot.data ?? const [];

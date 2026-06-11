@@ -406,6 +406,38 @@ void main() {
   );
 
   testWidgets(
+    'ChatScreen muestra mensaje huérfano en vivo mientras está abierto (watch emite)',
+    (WidgetTester tester) async {
+      await AppServices.chatRepository.upsertConversation(conversation());
+      await seedMessages();
+
+      await pumpChatScreen(tester, initialMessages: sampleMessages());
+      expect(find.text('Huérfano insertado en vivo'), findsNothing);
+
+      await AppServices.messageRepository.upsertMessage(
+        ChatMessage(
+          id: 901,
+          conversationId: 99,
+          direction: 'incoming',
+          body: 'Huérfano insertado en vivo',
+          waId: '+5491111111111',
+          isAdmin: false,
+          channel: 'whatsapp',
+          status: 'delivered',
+          createdAt: DateTime.utc(2026, 6, 5, 14, 5),
+        ),
+        alreadyResolved: true,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Huérfano insertado en vivo'), findsOneWidget);
+
+      await disposeWidgetTree(tester);
+    },
+  );
+
+  testWidgets(
     'ChatScreen muestra message.new con conversation_id servidor distinto (FIX 1b)',
     (WidgetTester tester) async {
       realtimeService.debugSetConnected(true);

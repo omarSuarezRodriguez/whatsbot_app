@@ -21,20 +21,24 @@ class MessageDao extends DatabaseAccessor<AppDatabase> with _$MessageDaoMixin {
 
   /// Hilo del chat abierto: mensajes del `conversationId` local **o** mismo
   /// `wa_id` bajo otro id (p. ej. conversation_id huérfano del servidor).
+  ///
+  /// Observa toda la tabla: un insert bajo otro `conversation_id` no dispara
+  /// [watchForConversation], pero sí debe actualizar el hilo abierto en vivo.
   Stream<List<MessageEntity>> watchForChatThread(
     int conversationId,
     bool Function(String waId) waMatches,
   ) {
-    return watchForConversation(conversationId).asyncMap((primary) async {
-      final others = await (select(messages)
-            ..where((t) => t.conversationId.equals(conversationId).not()))
-          .get();
+    return (select(messages)..orderBy([
+          (t) => OrderingTerm.asc(t.createdAt),
+          (t) => OrderingTerm.asc(t.id),
+        ]))
+        .watch()
+        .map((rows) {
       final byId = <int, MessageEntity>{};
-      for (final row in primary) {
-        byId[row.id] = row;
-      }
-      for (final row in others) {
-        if (waMatches(row.waId)) byId[row.id] = row;
+      for (final row in rows) {
+        if (row.conversationId == conversationId || waMatches(row.waId)) {
+          byId[row.id] = row;
+        }
       }
       return byId.values.toList()
         ..sort((a, b) {
