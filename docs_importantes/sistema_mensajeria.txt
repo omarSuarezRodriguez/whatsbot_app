@@ -1,44 +1,3 @@
-## 1.1
-
-
-
-
-
-##################################################################
-## 1.0 - Versión inicial limpia
-
-
-
-
-
-##################################################################
-## 1.1
-
-## prompt ##
-
-Construye un mapa completo del sistema de mensajería.
-
-No propongas soluciones.
-
-Identifica:
-
-- Componentes involucrados.
-- Flujo backend → frontend.
-- Flujo frontend → backend.
-- Estado.
-- Eventos.
-- Streams.
-- Listeners.
-- Suscripciones.
-- WebSockets.
-- Polling.
-- Cache.
-- Renderizado UI.
-
-Genera un diagrama ASCII completo.
-
-## resp cursor ##
-
 Sistema de Mensajería — WhatsBot App
 Diagrama ASCII Completo
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
@@ -394,5 +353,3 @@ clientUuid (UUID v4) para prevenir duplicados entre REST y WS
 Renderizado
 ListView.builder(reverse: true) + ValueKey(clientUuid) para reconciliación de keys
 
-
-#####################################################################
