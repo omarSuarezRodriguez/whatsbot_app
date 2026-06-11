@@ -1,4 +1,4 @@
-## 1.1
+## 1.2
 
 
 
@@ -396,3 +396,166 @@ ListView.builder(reverse: true) + ValueKey(clientUuid) para reconciliación de k
 
 
 #####################################################################
+## 1.2
+
+## prompt ##
+
+Tengo este síntoma:
+
+Mientras estoy dentro de ChatScreen, llegan mensajes al sistema pero la UI no se actualiza automáticamente.
+
+Busca exclusivamente dónde podría romperse la actualización visual.
+
+Empieza desde ChatScreen y recorre hacia atrás:
+
+ChatScreen
+← Streams
+← SQLite Drift
+← SyncEngine
+← RealtimeService
+← WebSocket
+← Backend
+
+Identifica el punto más probable de fallo.
+
+No expliques toda la arquitectura.
+Solo busca el bug.
+
+## resp cursor ##
+
+
+Demuestra esta hipótesis.
+
+No quiero posibilidades.
+
+Quiero evidencia completa.
+
+Traza exactamente:
+
+1. Dónde se construye el frame WebSocket.
+2. Qué JSON exacto envía el backend.
+3. Qué función serializa el evento.
+4. Qué estructura exacta recibe Flutter.
+5. Qué campos espera RealtimeEvent.fromJson().
+6. Compara ambos objetos campo por campo.
+
+Entrega:
+
+- JSON real enviado.
+- JSON esperado.
+- Diferencias.
+- Evidencia archivo:línea.
+
+Al final responde:
+
+CONFIRMADO
+o
+DESCARTADO
+
+No propongas fixes todavía.
+
+
+
+## resp cursor ##
+
+Tengo todo. La evidencia es completa y definitiva.
+
+---
+
+## Comparación campo por campo
+
+### JSON real enviado por el backend
+
+**Función:** `build_message_new_event` — `C:\Users\Usuario\Desktop\whatsbot\services\realtime_service.py:69–74`
+
+```python
+{
+    "type": "message.new",
+    "message": { ...serialize_message(msg)... },
+    "conversation": { ...serialize_conversation(conv)... }
+}
+```
+
+Enviado en `_emit_local` → `ws.send_text(payload)` — línea **197** y **232**. Sin ningún wrapper `payload`.
+
+---
+
+### JSON esperado por Flutter
+
+**Función:** `RealtimeEvent.fromJson` — `lib/models/realtime_event.dart:29–49`
+
+```dart
+{
+    "type":            json['type'],
+    "message":         json['message'],      // ← lee top-level
+    "conversation":    json['conversation'], // ← lee top-level
+    "message_id":      json['message_id'],
+    "conversation_id": json['conversation_id'],
+    "status":          json['status'],
+    "delivered_at":    json['delivered_at'],
+    "read_at":         json['read_at']
+}
+```
+
+---
+
+### Tabla comparativa campo por campo
+
+| Campo | Backend envía | Flutter lee | ¿Coincide? |
+|---|---|---|---|
+| `type` | `"message.new"` (top-level) | `json['type']` | **SÍ** |
+| `message` | top-level `dict` | `json['message']` | **SÍ** |
+| `conversation` | top-level `dict` | `json['conversation']` | **SÍ** |
+| `payload` | **NO existe en el frame real** | no se lee | **N/A** |
+
+---
+
+## DESCARTADO
+
+La hipótesis `payload` wrapper queda **descartada**. El backend nunca envía un campo `payload` en los frames de mensajes — la documentación estaba desactualizada o era especulativa.
+
+**El JSON real enviado es plano y coincide exactamente con lo que `RealtimeEvent.fromJson` espera.**
+
+---
+
+## Consecuencia directa
+
+El bug **no está** en el parsing del JSON. La cadena `RealtimeService → RealtimeEvent.fromJson` funciona correctamente. El punto de rotura está en otro eslabón. Los candidatos que siguen en pie son:
+
+1. `SyncEngine._handleMessageNew` — ¿hay un guard de `conversationId` que filtra el mensaje antes de insertarlo?
+2. `MessageDao.watchForConversation` — ¿el `conversationId` del mensaje insertado coincide con el de la pantalla abierta?
+3. `ChatScreen._onRealtimeEvent` — ¿`_messageBelongsToChat()` falla silenciosamente?
+
+¿Continúo trazando desde `SyncEngine` hacia adentro?
+
+
+
+## prompt ##
+
+Tenemos una hipótesis descartada:
+
+- RealtimeEvent.fromJson funciona correctamente.
+
+Ahora continúa la traza exclusivamente desde:
+
+SyncEngine._handleMessageNew
+
+Sigue el flujo completo hasta que el mensaje debería aparecer en pantalla.
+
+Para cada salto identifica:
+
+1. Entrada recibida.
+2. Condiciones de filtrado (guards, ifs, returns).
+3. Transformaciones.
+4. Inserciones en SQLite.
+5. Streams observados.
+6. Renderizado final.
+
+Detente inmediatamente cuando encuentres el primer punto donde un mensaje válido podría ser descartado.
+
+No propongas soluciones.
+
+Quiero el primer punto de fallo más probable con evidencia archivo:línea.
+
+
+###################################################
