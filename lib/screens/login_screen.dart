@@ -5,7 +5,7 @@ import '../services/api_client.dart';
 import '../services/message_alerts_service.dart';
 import '../services/push_service.dart';
 import '../theme/whatsapp_theme.dart';
-import 'chats_list_screen.dart';
+import 'main_shell.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, this.sessionExpired = false});
@@ -53,7 +53,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await AppServices.startRealtimeSession();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const ChatsListScreen()),
+        MaterialPageRoute(builder: (_) => const MainShell()),
       );
     } on ApiException catch (e) {
       setState(() => _error = e.message);

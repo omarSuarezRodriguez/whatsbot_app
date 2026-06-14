@@ -1,4 +1,4 @@
-## 1.9
+## 1.10
 
 
 
@@ -2317,3 +2317,71 @@ JWT_REFRESH_EXPIRE_DAYS=365
 
 
 #############################################
+## 1.10
+
+
+
+## prompt ##
+
+Ayudame, revisa por capas e identifica donde se cuentra el siguiente error: cuando loggeo a la app, aveces me muestra el navbar y aveces no, por qué es y cómo se puede solucionar? solo dime
+
+
+## resp cursor ##
+
+## Diagnóstico por capas
+
+**Capa UI (shell)** — `lib/screens/main_shell.dart`  
+El navbar (`BottomNavigationBar`) solo vive en `MainShell`. Envuelve las 5 pestañas (Chats, Pedidos, Clientes, Catálogo, Ajustes).
+
+**Capa routing (arranque)** — `lib/main.dart` → `SplashGate`  
+Si ya hay sesión válida al abrir la app, navega a `MainShell()` → **sí hay navbar**.
+
+**Capa presentación (login manual)** — `lib/screens/login_screen.dart`  
+Tras login con PIN, navega a `ChatsListScreen()` directamente, **sin pasar por `MainShell`** → **no hay navbar**.
+
+---
+
+## Por qué pasa “a veces”
+
+No es aleatorio. Depende del camino de entrada:
+
+| Escenario | Destino | Navbar |
+|-----------|---------|--------|
+| Abres la app con sesión guardada | `MainShell` | Sí |
+| Haces login manual con PIN | `ChatsListScreen` | No |
+
+Dos rutas post-auth distintas para el mismo estado “logueado”.
+
+---
+
+## Cómo solucionarlo
+
+Unificar el destino post-login: en `login_screen.dart` línea 56, cambiar:
+
+```dart
+MaterialPageRoute(builder: (_) => const ChatsListScreen()),
+```
+
+por:
+
+```dart
+MaterialPageRoute(builder: (_) => const MainShell()),
+```
+
+Así login manual y restauración de sesión usan el mismo shell con navbar. Opcional: quitar el import de `chats_list_screen.dart` en login si ya no se usa.
+
+
+## segundo prompt ##
+
+si 
+
+## resp cursor ##
+
+
+Listo. Tras login con PIN la app va a MainShell — mismo destino que al restaurar sesión. Navbar siempre visible.
+
+Hot restart (R en la terminal de flutter run) y prueba login manual.
+
+
+
+####################################################
