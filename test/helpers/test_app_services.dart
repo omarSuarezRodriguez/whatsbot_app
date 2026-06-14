@@ -1,6 +1,7 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whatsbot_app/data/local/app_database.dart';
 import 'package:whatsbot_app/data/repositories/chat_repository.dart';
 import 'package:whatsbot_app/data/repositories/message_repository.dart';
@@ -13,14 +14,16 @@ import 'package:whatsbot_app/services/message_alerts_service.dart';
 import 'package:whatsbot_app/services/realtime_service.dart';
 
 import 'test_api_client.dart';
+import 'test_session_storage.dart';
 
 /// Arranca AppServices con SQLite en memoria y API mock para widget tests.
 Future<TestApiClient> setUpTestAppServices() async {
   TestWidgetsFlutterBinding.ensureInitialized();
   realtimeService.disableSocketForTesting = true;
+  SharedPreferences.setMockInitialValues({});
   final testApi = TestApiClient();
   apiClient.replaceHttpClient(testApi.mockHttp);
-  await testApi.login();
+  apiClient.replaceSessionStorage(InMemorySessionStorage());
   await apiClient.login('default', 'pin');
 
   final db = AppDatabase.forTesting(NativeDatabase.memory());

@@ -6,13 +6,30 @@ import 'screens/main_shell.dart';
 import 'services/api_client.dart';
 import 'services/message_alerts_service.dart';
 import 'services/push_service.dart';
+import 'services/realtime_service.dart';
 import 'theme/whatsapp_theme.dart';
 import 'widgets/app_lifecycle_observer.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
 
+Future<void> _onSessionExpired() async {
+  AppServices.resetSessionFlags();
+  await realtimeService.disconnect();
+  try {
+    await pushService.unregisterOnLogout();
+  } catch (_) {}
+  navigatorKey.currentState?.pushAndRemoveUntil(
+    MaterialPageRoute(
+      builder: (_) => const LoginScreen(sessionExpired: true),
+    ),
+    (_) => false,
+  );
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  apiClient.onSessionExpired = _onSessionExpired;
+  apiClient.onTokenRefreshed = realtimeService.reconnectAfterTokenRefresh;
   await AppServices.init();
   await messageAlerts.init();
   await pushService.init();
@@ -53,21 +70,25 @@ class _SplashGateState extends State<SplashGate> {
 
   Future<void> _init() async {
     await apiClient.loadSession();
-    if (apiClient.isLoggedIn) {
-      AppServices.resetSessionFlags();
-      try {
-        await pushService.registerAfterLogin();
-      } catch (_) {}
-      try {
-        await AppServices.startRealtimeSession();
-      } catch (_) {}
+    final hasSession =
+        apiClient.isLoggedIn || await apiClient.hasRefreshToken();
+    var loggedIn = false;
+    if (hasSession) {
+      loggedIn = await apiClient.ensureValidSession(invalidateOnFailure: false);
+      if (loggedIn) {
+        AppServices.resetSessionFlags();
+        try {
+          await pushService.registerAfterLogin();
+        } catch (_) {}
+        try {
+          await AppServices.startRealtimeSession();
+        } catch (_) {}
+      }
     }
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => apiClient.isLoggedIn
-            ? const MainShell()
-            : const LoginScreen(),
+        builder: (_) => loggedIn ? const MainShell() : const LoginScreen(),
       ),
     );
   }

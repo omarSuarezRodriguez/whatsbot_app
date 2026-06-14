@@ -135,6 +135,21 @@ class RealtimeService {
     _setConnected(false);
   }
 
+  /// Tras renovar JWT en REST, el WS debe reconectarse con el token nuevo.
+  Future<void> reconnectAfterTokenRefresh() async {
+    if (!apiClient.isLoggedIn || disableSocketForTesting) return;
+    _intentionalDisconnect = false;
+    _backoffSeconds = 1;
+    _connecting = false;
+    _reconnectTimer?.cancel();
+    await _subscription?.cancel();
+    _subscription = null;
+    await _safeCloseChannel();
+    _setConnected(false);
+    await _openSocket();
+    _startKeepAlive();
+  }
+
   Future<void> syncNow() async {
     await _syncAfterReconnect(force: true);
   }

@@ -6,6 +6,9 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:whatsbot_app/services/api_client.dart';
+import 'package:whatsbot_app/services/session_storage.dart';
+
+import 'test_session_storage.dart';
 
 /// Cliente HTTP fake para tests de repositorios offline-first.
 class TestApiClient {
@@ -15,10 +18,12 @@ class TestApiClient {
     this.sendConversationId = 1,
     List<Map<String, dynamic>>? conversations,
     Map<int, List<Map<String, dynamic>>>? messagesByConversation,
+    SessionStorage? sessionStorage,
   })  : conversations = List<Map<String, dynamic>>.from(conversations ?? []),
         messagesByConversation = Map<int, List<Map<String, dynamic>>>.from(
           messagesByConversation ?? {},
-        );
+        ),
+        _sessionStorage = sessionStorage ?? InMemorySessionStorage();
 
   bool failSend;
   bool failConversations;
@@ -26,9 +31,13 @@ class TestApiClient {
   final List<Map<String, dynamic>> conversations;
   final Map<int, List<Map<String, dynamic>>> messagesByConversation;
   int _nextMessageId = 1000;
+  final SessionStorage _sessionStorage;
 
   late final MockClient mockHttp = _buildMockClient();
-  late final ApiClient client = ApiClient(httpClient: mockHttp);
+  late final ApiClient client = ApiClient(
+    httpClient: mockHttp,
+    sessionStorage: _sessionStorage,
+  );
 
   Future<void> login() async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -44,9 +53,38 @@ class TestApiClient {
         return http.Response(
           jsonEncode({
             'access_token': 'test-token',
+            'refresh_token': 'test-refresh-token',
             'token_type': 'bearer',
             'business_id': 'default',
             'business_name': 'Test Business',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+
+      if (path.endsWith('/auth/refresh') && request.method == 'POST') {
+        return http.Response(
+          jsonEncode({
+            'access_token': 'test-token-refreshed',
+            'refresh_token': 'test-refresh-token-rotated',
+            'token_type': 'bearer',
+            'business_id': 'default',
+            'business_name': 'Test Business',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+
+      if (path.endsWith('/whatsbot/business/me') && request.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'id': 'default',
+            'name': 'Test Business',
+            'twilio_whatsapp_from': '',
+            'admin_whatsapp_number': '',
+            'sheets_enabled': false,
           }),
           200,
           headers: {'content-type': 'application/json'},

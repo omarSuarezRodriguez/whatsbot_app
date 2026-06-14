@@ -81,9 +81,12 @@ class AppServices {
     unawaited(realtimeService.connect());
   }
 
-  /// Vuelta a primer plano: reconectar WS + delta REST una vez.
+  /// Vuelta a primer plano: validar JWT + reconectar WS + delta REST una vez.
   static Future<void> onAppResumed() async {
-    if (!_initialized || !apiClient.isLoggedIn) return;
+    if (!_initialized) return;
+    if (!apiClient.isLoggedIn && !await apiClient.hasRefreshToken()) return;
+    final valid = await apiClient.ensureValidSession();
+    if (!valid || !apiClient.isLoggedIn) return;
     await realtimeService.onAppResumed();
   }
 

@@ -377,6 +377,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
     } finally {
       if (mounted) setState(() => _sending = false);
     }

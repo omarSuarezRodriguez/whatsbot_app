@@ -8,7 +8,9 @@ import '../theme/whatsapp_theme.dart';
 import 'chats_list_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.sessionExpired = false});
+
+  final bool sessionExpired;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -19,6 +21,14 @@ class _LoginScreenState extends State<LoginScreen> {
   final _pinController = TextEditingController();
   bool _loading = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.sessionExpired) {
+      _error = 'Tu sesión expiró. Vuelve a iniciar sesión con tu PIN.';
+    }
+  }
 
   @override
   void dispose() {

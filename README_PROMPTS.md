@@ -1,4 +1,4 @@
-## 1.8 - se agrega caveman
+## 1.9
 
 
 
@@ -2260,3 +2260,60 @@ Ya se visualizan también los mensajes del bot, solo quedan mejoras menores
 Se agrega caveman
 
 
+
+
+#################################################
+## 1.9
+
+
+## prompt ##
+
+Quiero que me revises por capas y me encuentres el siguiente error: cuando me loggeo en la app y luego entro después de mucho tiempo, no puedo enviar mensajes y en el backend me sale error de token, entonces necesito que eso siempre quede guardado en el telefono o me des opciones para solucoinar eso, qué me preopones tu=
+
+
+
+## resp cursor ##
+
+Implementé la **Opción 3 (refresh token)** en backend y app.
+
+## Qué hace ahora
+
+**Backend** (`whatsbot/`):
+- `POST /auth/login` devuelve `access_token` + `refresh_token`
+- `POST /auth/refresh` renueva ambos tokens (rotación con `jti` único)
+- Access token: **24 h** (`JWT_EXPIRE_MINUTES`, default 1440)
+- Refresh token: **90 días** (`JWT_REFRESH_EXPIRE_DAYS`, nuevo)
+
+**App** (`whatsbot_app/`):
+- Refresh token en **Keychain/Keystore** (`flutter_secure_storage`)
+- Access token sigue en SharedPreferences
+- Ante **401** → refresh automático → reintenta la petición
+- Al abrir la app / volver de background → valida sesión y renueva si hace falta
+- WebSocket se reconecta con el token nuevo tras refresh
+- Si el refresh también caducó → login con mensaje *"Tu sesión expiró..."*
+- Error de auth **ya no** se trata como offline al enviar mensajes
+
+## Qué debes hacer tú
+
+1. **Reiniciar el backend** con el código nuevo (ngrok incluido).
+2. **Hot restart / reinstalar la app** (`flutter run` de nuevo).
+3. **Iniciar sesión una vez** con PIN → guarda el refresh token (90 días).
+   - Sesiones antiguas sin refresh token: un login manual y listo.
+
+## Comportamiento esperado
+
+| Situación | Resultado |
+|---|---|
+| Vuelves a la app al día siguiente | Refresh silencioso, sigues logueado |
+| Access token caduca (24 h) | Se renueva solo al usar la app |
+| Pasaron >90 días sin abrir | Pide PIN otra vez (normal y seguro) |
+| Backend apagado al abrir | Muestra caché local; sync al volver la red |
+
+Si quieres sesión aún más larga, en el `.env` del backend:
+
+```env
+JWT_REFRESH_EXPIRE_DAYS=365
+```
+
+
+#############################################

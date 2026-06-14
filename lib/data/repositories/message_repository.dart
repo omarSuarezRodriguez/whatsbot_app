@@ -454,6 +454,9 @@ class MessageRepository {
         tempMessageId: tempId,
       );
       return SendMessageResult(message: resolved, queued: false);
+    } on ApiException catch (e) {
+      if (e.isAuthError) rethrow;
+      return SendMessageResult(message: optimistic, queued: true);
     } catch (_) {
       return SendMessageResult(message: optimistic, queued: true);
     }
@@ -475,6 +478,7 @@ class MessageRepository {
           tempMessageId: item.tempMessageId,
         );
       } catch (e) {
+        if (e is ApiException && e.isAuthError) rethrow;
         await _db.outboundQueueDao.recordFailure(
           item.clientUuid,
           e.toString(),

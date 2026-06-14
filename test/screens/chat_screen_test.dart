@@ -1,6 +1,7 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whatsbot_app/data/local/app_database.dart';
 import 'package:whatsbot_app/data/repositories/chat_repository.dart';
 import 'package:whatsbot_app/data/repositories/message_repository.dart';
@@ -18,6 +19,7 @@ import 'package:whatsbot_app/widgets/typing_indicator.dart';
 import '../helpers/realtime_test_helper.dart';
 import '../helpers/test_api_client.dart';
 import '../helpers/test_app_services.dart';
+import '../helpers/test_session_storage.dart';
 
 void main() {
   late TestApiClient testApi;
@@ -339,9 +341,10 @@ void main() {
     'ChatScreen muestra mensaje enviado aunque el servidor use otro conversation_id',
     (WidgetTester tester) async {
       await tearDownTestAppServices();
+      SharedPreferences.setMockInitialValues({});
       final testApi = TestApiClient(sendConversationId: 99);
       apiClient.replaceHttpClient(testApi.mockHttp);
-      await testApi.login();
+      apiClient.replaceSessionStorage(InMemorySessionStorage());
       await apiClient.login('default', 'pin');
 
       final db = AppDatabase.forTesting(NativeDatabase.memory());

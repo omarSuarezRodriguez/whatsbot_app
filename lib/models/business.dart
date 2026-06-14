@@ -29,17 +29,20 @@ class LoginResult {
     required this.accessToken,
     required this.businessId,
     required this.businessName,
+    this.refreshToken,
   });
 
   final String accessToken;
   final String businessId;
   final String businessName;
+  final String? refreshToken;
 
   factory LoginResult.fromJson(Map<String, dynamic> json) {
     return LoginResult(
       accessToken: json['access_token'] as String,
       businessId: json['business_id'] as String,
       businessName: json['business_name'] as String? ?? '',
+      refreshToken: json['refresh_token'] as String?,
     );
   }
 }
