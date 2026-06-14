@@ -1,4 +1,4 @@
-## 1.7 - mejora incremental al chat
+## 1.8 - se agrega caveman
 
 
 
@@ -2253,5 +2253,10 @@ Ya se visualizan también los mensajes del bot, solo quedan mejoras menores
 
 
 
+##################################################
+## 1.8
+
+
+Se agrega caveman
 
 
