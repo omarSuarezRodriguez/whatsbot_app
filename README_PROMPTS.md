@@ -1,4 +1,4 @@
-## 1.10
+## 1.11 - Caveman y ponytail added
 
 
 
@@ -2385,3 +2385,8 @@ Hot restart (R en la terminal de flutter run) y prueba login manual.
 
 
 ####################################################
+## 1.11
+
+## prompt
+
+
